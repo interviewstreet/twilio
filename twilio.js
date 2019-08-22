@@ -1,9 +1,9 @@
-/*! twilio-client.js 1.7.6
+/*! twilio-client.js 1.5.2
 
 The following license applies to all parts of this software except as
 documented below.
 
-    Copyright (C) 2015-2019 Twilio, inc.
+    Copyright 2015 Twilio, inc.
  
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -51,28 +51,6 @@ This software includes rtcpeerconnection-shim under the following (BSD 3-Clause)
     (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
     OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-This software includes backoff under the following (MIT) license.
-
-    Copyright (C) 2012 Mathieu Turcotte
-
-    Permission is hereby granted, free of charge, to any person obtaining a copy of
-    this software and associated documentation files (the "Software"), to deal in
-    the Software without restriction, including without limitation the rights to
-    use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-    of the Software, and to permit persons to whom the Software is furnished to do
-    so, subject to the following conditions:
-
-    The above copyright notice and this permission notice shall be included in all
-    copies or substantial portions of the Software.
-
-    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-    SOFTWARE.
-
  */
 /* eslint-disable */
 (function(root) {
@@ -85,575 +63,525 @@ This software includes backoff under the following (MIT) license.
   module.exports = { XMLHttpRequest: XMLHttpRequest };
   
   },{}],3:[function(require,module,exports){
-  'use strict';
-  
   var Device = require('./twilio/device').default;
-  
-  var _require = require('events'),
-      EventEmitter = _require.EventEmitter;
-  
-  var instance = void 0;
+  var instance;
   Object.defineProperty(Device, 'instance', {
-    get: function get() {
-      return instance;
-    },
-    set: function set(_instance) {
-      if (_instance === null) {
-        instance = null;
+      get: function () { return instance; },
+      set: function (_instance) {
+          if (_instance === null) {
+              instance = null;
+          }
       }
-    }
   });
-  
   Device.destroy = function destroySingleton() {
-    instance.destroy();
-    bindSingleton();
+      instance.destroy();
+      bindSingleton();
   };
-  
   /**
    * Create a new Device instance and bind its functions to the Device static. This maintains
    * backwards compatibility for the Device singleton behavior and will be removed in the next
    * breaking release.
    */
   function bindSingleton() {
-    instance = new Device();
-  
-    Object.getOwnPropertyNames(Device.prototype).concat(Object.getOwnPropertyNames(EventEmitter.prototype)).filter(function (prop) {
-      return typeof Device.prototype[prop] === 'function';
-    }).filter(function (prop) {
-      return prop !== 'destroy';
-    }).forEach(function (prop) {
-      Device[prop] = Device.prototype[prop].bind(instance);
-    });
+      instance = new Device();
+      Object.getOwnPropertyNames(Device.prototype)
+          .filter(function (prop) { return typeof Device.prototype[prop] === 'function'; })
+          .filter(function (prop) { return prop !== 'destroy'; })
+          .forEach(function (prop) { Device[prop] = Device.prototype[prop].bind(instance); });
   }
-  
   bindSingleton();
-  
-  Object.getOwnPropertyNames(instance).filter(function (prop) {
-    return typeof Device.prototype[prop] !== 'function';
-  }).forEach(function (prop) {
-    Object.defineProperty(Device, prop, {
-      get: function get() {
-        return instance[prop];
-      },
-      set: function set(_prop) {
-        instance[prop] = _prop;
-      }
-    });
+  Object.getOwnPropertyNames(instance)
+      .filter(function (prop) { return typeof Device.prototype[prop] !== 'function'; })
+      .forEach(function (prop) {
+      Object.defineProperty(Device, prop, {
+          get: function () { return instance[prop]; },
+          set: function (_prop) { instance[prop] = _prop; },
+      });
   });
-  
   exports.Device = Device;
   exports.PStream = require('./twilio/pstream').PStream;
   exports.Connection = require('./twilio/connection').Connection;
-  },{"./twilio/connection":5,"./twilio/device":7,"./twilio/pstream":12,"events":42}],4:[function(require,module,exports){
-  "use strict";
-  var __extends = (this && this.__extends) || (function () {
-      var extendStatics = Object.setPrototypeOf ||
-          ({ __proto__: [] } instanceof Array && function (d, b) { d.__proto__ = b; }) ||
-          function (d, b) { for (var p in b) if (b.hasOwnProperty(p)) d[p] = b[p]; };
-      return function (d, b) {
-          extendStatics(d, b);
-          function __() { this.constructor = d; }
-          d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
-      };
-  })();
-  Object.defineProperty(exports, "__esModule", { value: true });
-  /**
-   * @module Voice
-   */
-  var events_1 = require("events");
-  var outputdevicecollection_1 = require("./outputdevicecollection");
-  var defaultMediaDevices = require("./shims/mediadevices");
-  var tslog_1 = require("./tslog");
-  var util_1 = require("./util");
+  
+  },{"./twilio/connection":5,"./twilio/device":7,"./twilio/pstream":11}],4:[function(require,module,exports){
+  var EventEmitter = require('events').EventEmitter;
+  var inherits = require('util').inherits;
+  var log = require('./log');
   var MediaDeviceInfoShim = require('./shims/mediadeviceinfo');
+  var defaultMediaDevices = require('./shims/mediadevices');
+  var OutputDeviceCollection = require('./outputdevicecollection');
+  var util = require('./util');
   /**
-   * Aliases for audio kinds, used for labelling.
-   * @private
+   * @typedef {Object} EnabledSounds
+   * @property {boolean} [incoming=true] - Whether incoming sound should play
+   * @property {boolean} [outgoing=true] - Whether outgoing sound should play
+   * @property {boolean} [disconnect=true] - Whether disconnect sound should play
    */
-  var kindAliases = {
-      audioinput: 'Audio Input',
-      audiooutput: 'Audio Output',
+  /**
+   * @class
+   * @property {Map<string, MediaDeviceInfo>} availableInputDevices - A
+   *   Map of all audio input devices currently available to the browser by their device ID.
+   * @property {Map<string, MediaDeviceInfo>} availableOutputDevices - A
+   *   Map of all audio output devices currently available to the browser by their device ID.
+   * @property {MediaDeviceInfo} inputDevice - The active input device. This will not
+   *   initially be populated. Having no inputDevice specified by setInputDevice()
+   *   will disable input selection related functionality.
+   * @property {boolean} isOutputSelectionSupported - False if the browser does not support
+   *   setSinkId or enumerateDevices and Twilio can not facilitate output selection
+   *   functionality.
+   * @property {boolean} isVolumeSupported - False if the browser does not support
+   *   AudioContext and Twilio can not analyse the volume in real-time.
+   * @property {OutputDeviceCollection} speakerDevices - The current set of output
+   *   devices that call audio ([voice, outgoing, disconnect, dtmf]) is routed through.
+   *   These are the sounds that are initiated by the user, or played while the user
+   *   is otherwise present at the endpoint. If all specified devices are lost,
+   *   this Set will revert to contain only the "default" device.
+   * @property {OutputDeviceCollection} ringtoneDevices - The current set of output
+   *   devices that incoming ringtone audio is routed through. These are the sounds that
+   *   may play while the user is away from the machine or not wearing their
+   *   headset. It is important that this audio is heard. If all specified
+   *   devices lost, this Set will revert to contain only the "default" device.
+   * @property {EnabledSounds} enabledSounds
+   * @fires AudioHelper#deviceChange
+   */
+  function AudioHelper(onActiveOutputsChanged, onActiveInputChanged, getUserMedia, options) {
+      if (!(this instanceof AudioHelper)) {
+          return new AudioHelper(onActiveOutputsChanged, onActiveInputChanged, getUserMedia, options);
+      }
+      EventEmitter.call(this);
+      options = Object.assign({
+          AudioContext: typeof AudioContext !== 'undefined' && AudioContext,
+          mediaDevices: defaultMediaDevices,
+          setSinkId: typeof HTMLAudioElement !== 'undefined' && HTMLAudioElement.prototype.setSinkId
+      }, options);
+      log.mixinLog(this, '[AudioHelper]');
+      this.log.enabled = options.logEnabled;
+      this.log.warnings = options.logWarnings;
+      var availableInputDevices = new Map();
+      var availableOutputDevices = new Map();
+      var isAudioContextSupported = !!(options.AudioContext || options.audioContext);
+      var mediaDevices = options.mediaDevices;
+      var isEnumerationSupported = mediaDevices && mediaDevices.enumerateDevices || false;
+      var isSetSinkSupported = typeof options.setSinkId === 'function';
+      var isOutputSelectionSupported = isEnumerationSupported && isSetSinkSupported;
+      var isVolumeSupported = isAudioContextSupported;
+      if (options.enabledSounds) {
+          addOptionsToAudioHelper(this, options.enabledSounds);
+      }
+      var audioContext = null;
+      var inputVolumeAnalyser = null;
+      if (isVolumeSupported) {
+          audioContext = options.audioContext || new options.AudioContext();
+          inputVolumeAnalyser = audioContext.createAnalyser();
+          inputVolumeAnalyser.fftSize = 32;
+          inputVolumeAnalyser.smoothingTimeConstant = 0.3;
+      }
+      var self = this;
+      Object.defineProperties(this, {
+          _audioContext: {
+              value: audioContext
+          },
+          _getUserMedia: {
+              value: getUserMedia
+          },
+          _inputDevice: {
+              value: null,
+              writable: true
+          },
+          _inputStream: {
+              value: null,
+              writable: true
+          },
+          _inputVolumeAnalyser: {
+              value: inputVolumeAnalyser
+          },
+          _isPollingInputVolume: {
+              value: false,
+              writable: true
+          },
+          _onActiveInputChanged: {
+              value: onActiveInputChanged
+          },
+          _mediaDevices: {
+              value: mediaDevices
+          },
+          _unknownDeviceIndexes: {
+              value: {}
+          },
+          _updateAvailableDevices: {
+              value: updateAvailableDevices.bind(null, this)
+          },
+          availableInputDevices: {
+              enumerable: true,
+              value: availableInputDevices
+          },
+          availableOutputDevices: {
+              enumerable: true,
+              value: availableOutputDevices
+          },
+          inputDevice: {
+              enumerable: true,
+              get: function () {
+                  return self._inputDevice;
+              }
+          },
+          inputStream: {
+              enumerable: true,
+              get: function () {
+                  return self._inputStream;
+              }
+          },
+          isVolumeSupported: {
+              enumerable: true,
+              value: isVolumeSupported
+          },
+          isOutputSelectionSupported: {
+              enumerable: true,
+              value: isOutputSelectionSupported
+          },
+          ringtoneDevices: {
+              enumerable: true,
+              value: new OutputDeviceCollection('ringtone', availableOutputDevices, onActiveOutputsChanged, isOutputSelectionSupported)
+          },
+          speakerDevices: {
+              enumerable: true,
+              value: new OutputDeviceCollection('speaker', availableOutputDevices, onActiveOutputsChanged, isOutputSelectionSupported)
+          }
+      });
+      this.on('newListener', function (eventName) {
+          if (eventName === 'inputVolume') {
+              self._maybeStartPollingVolume();
+          }
+      });
+      this.on('removeListener', function (eventName) {
+          if (eventName === 'inputVolume') {
+              self._maybeStopPollingVolume();
+          }
+      });
+      this.once('newListener', function () {
+          // NOTE (rrowland): Ideally we would only check isEnumerationSupported here, but
+          //   in at least one browser version (Tested in FF48) enumerateDevices actually
+          //   returns bad data for the listed devices. Instead, we check for
+          //   isOutputSelectionSupported to avoid these quirks that may negatively affect customers.
+          if (!isOutputSelectionSupported) {
+              // eslint-disable-next-line no-console
+              console.warn('Warning: This browser does not support audio output selection.');
+          }
+          if (!isVolumeSupported) {
+              // eslint-disable-next-line no-console
+              console.warn('Warning: This browser does not support Twilio\'s volume indicator feature.');
+          }
+      });
+      if (isEnumerationSupported) {
+          initializeEnumeration(this);
+      }
+  }
+  function initializeEnumeration(audio) {
+      audio._mediaDevices.addEventListener('devicechange', audio._updateAvailableDevices);
+      audio._mediaDevices.addEventListener('deviceinfochange', audio._updateAvailableDevices);
+      updateAvailableDevices(audio).then(function () {
+          if (!audio.isOutputSelectionSupported) {
+              return;
+          }
+          Promise.all([
+              audio.speakerDevices.set('default'),
+              audio.ringtoneDevices.set('default')
+          ]).catch(function (reason) {
+              audio.log.warn("Warning: Unable to set audio output devices. " + reason);
+          });
+      });
+  }
+  inherits(AudioHelper, EventEmitter);
+  AudioHelper.prototype._maybeStartPollingVolume = function _maybeStartPollingVolume() {
+      if (!this.isVolumeSupported || !this._inputStream) {
+          return;
+      }
+      updateVolumeSource(this);
+      if (this._isPollingInputVolume) {
+          return;
+      }
+      var bufferLength = this._inputVolumeAnalyser.frequencyBinCount;
+      var buffer = new Uint8Array(bufferLength);
+      var self = this;
+      this._isPollingInputVolume = true;
+      requestAnimationFrame(function emitVolume() {
+          if (!self._isPollingInputVolume) {
+              return;
+          }
+          self._inputVolumeAnalyser.getByteFrequencyData(buffer);
+          var inputVolume = util.average(buffer);
+          self.emit('inputVolume', inputVolume / 255);
+          requestAnimationFrame(emitVolume);
+      });
+  };
+  AudioHelper.prototype._maybeStopPollingVolume = function _maybeStopPollingVolume() {
+      if (!this.isVolumeSupported) {
+          return;
+      }
+      if (!this._isPollingInputVolume || (this._inputStream && this.listenerCount('inputVolume'))) {
+          return;
+      }
+      if (this._inputVolumeSource) {
+          this._inputVolumeSource.disconnect();
+          this._inputVolumeSource = null;
+      }
+      this._isPollingInputVolume = false;
   };
   /**
-   * Provides input and output audio-based functionality in one convenient class.
-   * @publicapi
+   * Replace the current input device with a new device by ID.
+   * @param {string} deviceId - An ID of a device to replace the existing
+   *   input device with.
+   * @returns {Promise} - Rejects if the ID is not found, setting the input device
+   *   fails, or an ID is not passed.
    */
-  var AudioHelper = /** @class */ (function (_super) {
-      __extends(AudioHelper, _super);
-      /**
-       * @constructor
-       * @private
-       * @param onActiveOutputsChanged - A callback to be called when the user changes the active output devices.
-       * @param onActiveInputChanged - A callback to be called when the user changes the active input device.
-       * @param getUserMedia - The getUserMedia method to use.
-       * @param [options]
-       */
-      function AudioHelper(onActiveOutputsChanged, onActiveInputChanged, getUserMedia, options) {
-          var _this = _super.call(this) || this;
-          /**
-           * A Map of all audio input devices currently available to the browser by their device ID.
-           */
-          _this.availableInputDevices = new Map();
-          /**
-           * A Map of all audio output devices currently available to the browser by their device ID.
-           */
-          _this.availableOutputDevices = new Map();
-          /**
-           * The currently set audio constraints set by setAudioConstraints().
-           */
-          _this._audioConstraints = null;
-          /**
-           * The current input device.
-           */
-          _this._inputDevice = null;
-          /**
-           * The current input stream.
-           */
-          _this._inputStream = null;
-          /**
-           * Whether the {@link AudioHelper} is currently polling the input stream's volume.
-           */
-          _this._isPollingInputVolume = false;
-          /**
-           * A record of unknown devices (Devices without labels)
-           */
-          _this._unknownDeviceIndexes = {
-              audioinput: {},
-              audiooutput: {},
-          };
-          /**
-           * Remove an input device from inputs
-           * @param lostDevice
-           * @returns Whether the device was active
-           */
-          _this._removeLostInput = function (lostDevice) {
-              if (!_this.inputDevice || _this.inputDevice.deviceId !== lostDevice.deviceId) {
-                  return false;
-              }
-              _this._replaceStream(null);
-              _this._inputDevice = null;
-              _this._maybeStopPollingVolume();
-              var defaultDevice = _this.availableInputDevices.get('default')
-                  || Array.from(_this.availableInputDevices.values())[0];
-              if (defaultDevice) {
-                  _this.setInputDevice(defaultDevice.deviceId);
-              }
-              return true;
-          };
-          /**
-           * Remove an input device from outputs
-           * @param lostDevice
-           * @returns Whether the device was active
-           */
-          _this._removeLostOutput = function (lostDevice) {
-              var wasSpeakerLost = _this.speakerDevices.delete(lostDevice);
-              var wasRingtoneLost = _this.ringtoneDevices.delete(lostDevice);
-              return wasSpeakerLost || wasRingtoneLost;
-          };
-          /**
-           * Update the available input and output devices
-           */
-          _this._updateAvailableDevices = function () {
-              if (!_this._mediaDevices) {
-                  return Promise.reject('Enumeration not supported');
-              }
-              return _this._mediaDevices.enumerateDevices().then(function (devices) {
-                  _this._updateDevices(devices.filter(function (d) { return d.kind === 'audiooutput'; }), _this.availableOutputDevices, _this._removeLostOutput);
-                  _this._updateDevices(devices.filter(function (d) { return d.kind === 'audioinput'; }), _this.availableInputDevices, _this._removeLostInput);
-                  var defaultDevice = _this.availableOutputDevices.get('default')
-                      || Array.from(_this.availableOutputDevices.values())[0];
-                  [_this.speakerDevices, _this.ringtoneDevices].forEach(function (outputDevices) {
-                      if (!outputDevices.get().size && _this.availableOutputDevices.size) {
-                          outputDevices.set(defaultDevice.deviceId);
-                      }
-                  });
-              });
-          };
-          options = Object.assign({
-              AudioContext: typeof AudioContext !== 'undefined' && AudioContext,
-              setSinkId: typeof HTMLAudioElement !== 'undefined' && HTMLAudioElement.prototype.setSinkId,
-          }, options);
-          _this._getUserMedia = getUserMedia;
-          _this._log = new tslog_1.default(options.logLevel || tslog_1.LogLevel.Warn);
-          _this._mediaDevices = options.mediaDevices || defaultMediaDevices;
-          _this._onActiveInputChanged = onActiveInputChanged;
-          var isAudioContextSupported = !!(options.AudioContext || options.audioContext);
-          var isEnumerationSupported = !!(_this._mediaDevices && _this._mediaDevices.enumerateDevices);
-          var isSetSinkSupported = typeof options.setSinkId === 'function';
-          _this.isOutputSelectionSupported = isEnumerationSupported && isSetSinkSupported;
-          _this.isVolumeSupported = isAudioContextSupported;
-          if (options.enabledSounds) {
-              _this._addEnabledSounds(options.enabledSounds);
-          }
-          if (_this.isVolumeSupported) {
-              _this._audioContext = options.audioContext || options.AudioContext && new options.AudioContext();
-              if (_this._audioContext) {
-                  _this._inputVolumeAnalyser = _this._audioContext.createAnalyser();
-                  _this._inputVolumeAnalyser.fftSize = 32;
-                  _this._inputVolumeAnalyser.smoothingTimeConstant = 0.3;
-              }
-          }
-          _this.ringtoneDevices = new outputdevicecollection_1.default('ringtone', _this.availableOutputDevices, onActiveOutputsChanged, _this.isOutputSelectionSupported);
-          _this.speakerDevices = new outputdevicecollection_1.default('speaker', _this.availableOutputDevices, onActiveOutputsChanged, _this.isOutputSelectionSupported);
-          _this.addListener('newListener', function (eventName) {
-              if (eventName === 'inputVolume') {
-                  _this._maybeStartPollingVolume();
-              }
-          });
-          _this.addListener('removeListener', function (eventName) {
-              if (eventName === 'inputVolume') {
-                  _this._maybeStopPollingVolume();
-              }
-          });
-          _this.once('newListener', function () {
-              // NOTE (rrowland): Ideally we would only check isEnumerationSupported here, but
-              //   in at least one browser version (Tested in FF48) enumerateDevices actually
-              //   returns bad data for the listed devices. Instead, we check for
-              //   isOutputSelectionSupported to avoid these quirks that may negatively affect customers.
-              if (!_this.isOutputSelectionSupported) {
-                  _this._log.warn('Warning: This browser does not support audio output selection.');
-              }
-              if (!_this.isVolumeSupported) {
-                  _this._log.warn("Warning: This browser does not support Twilio's volume indicator feature.");
-              }
-          });
-          if (isEnumerationSupported) {
-              _this._initializeEnumeration();
-          }
-          return _this;
+  AudioHelper.prototype.setInputDevice = function setInputDevice(deviceId) {
+      if (util.isFirefox()) {
+          return Promise.reject(new Error('Firefox does not currently support opening multiple ' +
+              'audio input tracks simultaneously, even across different tabs. As a result, ' +
+              'Device.audio.setInputDevice is disabled on Firefox until support is added.\n' +
+              'Related BugZilla thread: https://bugzilla.mozilla.org/show_bug.cgi?id=1299324'));
       }
-      Object.defineProperty(AudioHelper.prototype, "audioConstraints", {
-          /**
-           * The currently set audio constraints set by setAudioConstraints(). Starts as null.
-           */
-          get: function () { return this._audioConstraints; },
-          enumerable: true,
-          configurable: true
-      });
-      Object.defineProperty(AudioHelper.prototype, "inputDevice", {
-          /**
-           * The active input device. Having no inputDevice specified by `setInputDevice()`
-           * will disable input selection related functionality.
-           */
-          get: function () { return this._inputDevice; },
-          enumerable: true,
-          configurable: true
-      });
-      Object.defineProperty(AudioHelper.prototype, "inputStream", {
-          /**
-           * The current input stream.
-           */
-          get: function () { return this._inputStream; },
-          enumerable: true,
-          configurable: true
-      });
-      /**
-       * Start polling volume if it's supported and there's an input stream to poll.
-       * @private
-       */
-      AudioHelper.prototype._maybeStartPollingVolume = function () {
-          var _this = this;
-          if (!this.isVolumeSupported || !this._inputStream) {
-              return;
-          }
-          this._updateVolumeSource();
-          if (this._isPollingInputVolume || !this._inputVolumeAnalyser) {
-              return;
-          }
-          var bufferLength = this._inputVolumeAnalyser.frequencyBinCount;
-          var buffer = new Uint8Array(bufferLength);
-          this._isPollingInputVolume = true;
-          var emitVolume = function () {
-              if (!_this._isPollingInputVolume) {
-                  return;
-              }
-              if (_this._inputVolumeAnalyser) {
-                  _this._inputVolumeAnalyser.getByteFrequencyData(buffer);
-                  var inputVolume = util_1.average(buffer);
-                  _this.emit('inputVolume', inputVolume / 255);
-              }
-              requestAnimationFrame(emitVolume);
-          };
-          requestAnimationFrame(emitVolume);
-      };
-      /**
-       * Stop polling volume if it's currently polling and there are no listeners.
-       * @private
-       */
-      AudioHelper.prototype._maybeStopPollingVolume = function () {
-          if (!this.isVolumeSupported) {
-              return;
-          }
-          if (!this._isPollingInputVolume || (this._inputStream && this.listenerCount('inputVolume'))) {
-              return;
-          }
-          if (this._inputVolumeSource) {
-              this._inputVolumeSource.disconnect();
-              delete this._inputVolumeSource;
-          }
-          this._isPollingInputVolume = false;
-      };
-      /**
-       * Unbind the listeners from mediaDevices.
-       * @private
-       */
-      AudioHelper.prototype._unbind = function () {
-          if (!this._mediaDevices) {
-              throw new Error('Enumeration is not supported');
-          }
-          if (this._mediaDevices.removeEventListener) {
-              this._mediaDevices.removeEventListener('devicechange', this._updateAvailableDevices);
-              this._mediaDevices.removeEventListener('deviceinfochange', this._updateAvailableDevices);
-          }
-      };
-      /**
-       * Set the MediaTrackConstraints to be applied on every getUserMedia call for new input
-       * device audio. Any deviceId specified here will be ignored. Instead, device IDs should
-       * be specified using {@link AudioHelper#setInputDevice}. The returned Promise resolves
-       * when the media is successfully reacquired, or immediately if no input device is set.
-       * @param audioConstraints - The MediaTrackConstraints to apply.
-       */
-      AudioHelper.prototype.setAudioConstraints = function (audioConstraints) {
-          this._audioConstraints = Object.assign({}, audioConstraints);
-          delete this._audioConstraints.deviceId;
-          return this.inputDevice
-              ? this._setInputDevice(this.inputDevice.deviceId, true)
-              : Promise.resolve();
-      };
-      /**
-       * Replace the current input device with a new device by ID.
-       * @param deviceId - An ID of a device to replace the existing
-       *   input device with.
-       */
-      AudioHelper.prototype.setInputDevice = function (deviceId) {
-          return !util_1.isFirefox()
-              ? this._setInputDevice(deviceId, false)
-              : Promise.reject(new Error('Firefox does not currently support opening multiple ' +
-                  'audio input tracks simultaneously, even across different tabs. As a result, ' +
-                  'Device.audio.setInputDevice is disabled on Firefox until support is added.\n' +
-                  'Related BugZilla thread: https://bugzilla.mozilla.org/show_bug.cgi?id=1299324'));
-      };
-      /**
-       * Unset the MediaTrackConstraints to be applied on every getUserMedia call for new input
-       * device audio. The returned Promise resolves when the media is successfully reacquired,
-       * or immediately if no input device is set.
-       */
-      AudioHelper.prototype.unsetAudioConstraints = function () {
-          this._audioConstraints = null;
-          return this.inputDevice
-              ? this._setInputDevice(this.inputDevice.deviceId, true)
-              : Promise.resolve();
-      };
-      /**
-       * Unset the input device, stopping the tracks. This should only be called when not in a connection, and
-       *   will not allow removal of the input device during a live call.
-       */
-      AudioHelper.prototype.unsetInputDevice = function () {
-          var _this = this;
-          if (!this.inputDevice) {
+      return this._setInputDevice(deviceId, false);
+  };
+  /**
+   * Replace the current input device with a new device by ID.
+   * @private
+   * @param {string} deviceId - An ID of a device to replace the existing
+   *   input device with.
+   * @param {boolean} forceGetUserMedia - If true, getUserMedia will be called even if
+   *   the specified device is already active.
+   * @returns {Promise} - Rejects if the ID is not found, setting the input device
+   *   fails, or an ID is not passed.
+   */
+  AudioHelper.prototype._setInputDevice = function _setInputDevice(deviceId, forceGetUserMedia) {
+      if (typeof deviceId !== 'string') {
+          return Promise.reject(new Error('Must specify the device to set'));
+      }
+      var device = this.availableInputDevices.get(deviceId);
+      if (!device) {
+          return Promise.reject(new Error("Device not found: " + deviceId));
+      }
+      if (this._inputDevice && this._inputDevice.deviceId === deviceId && this._inputStream) {
+          if (!forceGetUserMedia) {
               return Promise.resolve();
           }
-          return this._onActiveInputChanged(null).then(function () {
-              _this._replaceStream(null);
-              _this._inputDevice = null;
-              _this._maybeStopPollingVolume();
+          // If the currently active track is still in readyState `live`, gUM may return the same track
+          // rather than returning a fresh track.
+          this._inputStream.getTracks().forEach(function (track) {
+              track.stop();
           });
-      };
-      /**
-       * Merge the passed enabledSounds into {@link AudioHelper}. Currently used to merge the deprecated
-       *   Device.sounds object onto the new {@link AudioHelper} interface. Mutates
-       *   by reference, sharing state between {@link Device} and {@link AudioHelper}.
-       * @param enabledSounds - The initial sound settings to merge.
-       * @private
-       */
-      AudioHelper.prototype._addEnabledSounds = function (enabledSounds) {
-          var _this = this;
-          function setValue(key, value) {
-              if (typeof value !== 'undefined') {
-                  enabledSounds[key] = value;
-              }
-              return enabledSounds[key];
-          }
-          Object.keys(enabledSounds).forEach(function (key) {
-              _this[key] = setValue.bind(null, key);
+      }
+      var self = this;
+      return this._getUserMedia({
+          audio: { deviceId: { exact: deviceId } }
+      }).then(function onGetUserMediaSuccess(stream) {
+          return self._onActiveInputChanged(stream).then(function () {
+              replaceStream(self, stream);
+              self._inputDevice = device;
+              self._maybeStartPollingVolume();
           });
-      };
-      /**
-       * Get the index of an un-labeled Device.
-       * @param mediaDeviceInfo
-       * @returns The index of the passed MediaDeviceInfo
-       */
-      AudioHelper.prototype._getUnknownDeviceIndex = function (mediaDeviceInfo) {
-          var id = mediaDeviceInfo.deviceId;
-          var kind = mediaDeviceInfo.kind;
-          var index = this._unknownDeviceIndexes[kind][id];
-          if (!index) {
-              index = Object.keys(this._unknownDeviceIndexes[kind]).length + 1;
-              this._unknownDeviceIndexes[kind][id] = index;
+      });
+  };
+  /**
+   * Unset the input device, stopping the tracks. This should only be called when not in a connection, and
+   *   will not allow removal of the input device during a live call.
+   * @returns {Promise} Rejects if the input device is currently in use by a connection.
+   */
+  AudioHelper.prototype.unsetInputDevice = function unsetInputDevice() {
+      if (!this.inputDevice) {
+          return Promise.resolve();
+      }
+      var self = this;
+      return this._onActiveInputChanged(null).then(function () {
+          replaceStream(self, null);
+          self._inputDevice = null;
+          self._maybeStopPollingVolume();
+      });
+  };
+  /**
+   * Unbind the listeners from mediaDevices.
+   * @private
+   */
+  AudioHelper.prototype._unbind = function _unbind() {
+      this._mediaDevices.removeEventListener('devicechange', this._updateAvailableDevices);
+      this._mediaDevices.removeEventListener('deviceinfochange', this._updateAvailableDevices);
+  };
+  /**
+   * @event AudioHelper#deviceChange
+   * Fired when the list of available devices has changed.
+   * @param {Array<MediaDeviceInfo>} lostActiveDevices - An array of all currently-active
+   *   devices that were removed with this device change. An empty array if the current
+   *   active devices remain unchanged. A non-empty array is an indicator that the user
+   *   experience has likely been impacted.
+   */
+  /**
+   * Merge the passed Options into AudioHelper. Currently used to merge the deprecated
+   *   <Options>Device.sounds object onto the new AudioHelper interface. Mutates
+   *   by reference, sharing state between Device and AudioHelper.
+   * @param {AudioHelper} audioHelper - The AudioHelper instance to merge the Options
+   *   onto.
+   * @param {EnabledSounds} enabledSounds - The initial sound settings to merge.
+   * @private
+   */
+  function addOptionsToAudioHelper(audioHelper, enabledSounds) {
+      function setValue(key, value) {
+          if (typeof value !== 'undefined') {
+              enabledSounds[key] = value;
           }
-          return index;
-      };
-      /**
-       * Initialize output device enumeration.
-       */
-      AudioHelper.prototype._initializeEnumeration = function () {
-          var _this = this;
-          if (!this._mediaDevices) {
-              throw new Error('Enumeration is not supported');
-          }
-          if (this._mediaDevices.addEventListener) {
-              this._mediaDevices.addEventListener('devicechange', this._updateAvailableDevices);
-              this._mediaDevices.addEventListener('deviceinfochange', this._updateAvailableDevices);
-          }
-          this._updateAvailableDevices().then(function () {
-              if (!_this.isOutputSelectionSupported) {
-                  return;
-              }
-              Promise.all([
-                  _this.speakerDevices.set('default'),
-                  _this.ringtoneDevices.set('default'),
-              ]).catch(function (reason) {
-                  _this._log.warn("Warning: Unable to set audio output devices. " + reason);
-              });
-          });
-      };
-      /**
-       * Stop the tracks on the current input stream before replacing it with the passed stream.
-       * @param stream - The new stream
-       */
-      AudioHelper.prototype._replaceStream = function (stream) {
-          if (this._inputStream) {
-              this._inputStream.getTracks().forEach(function (track) {
-                  track.stop();
-              });
-          }
-          this._inputStream = stream;
-      };
-      /**
-       * Replace the current input device with a new device by ID.
-       * @param deviceId - An ID of a device to replace the existing
-       *   input device with.
-       * @param forceGetUserMedia - If true, getUserMedia will be called even if
-       *   the specified device is already active.
-       */
-      AudioHelper.prototype._setInputDevice = function (deviceId, forceGetUserMedia) {
-          var _this = this;
-          if (typeof deviceId !== 'string') {
-              return Promise.reject(new Error('Must specify the device to set'));
-          }
-          var device = this.availableInputDevices.get(deviceId);
-          if (!device) {
-              return Promise.reject(new Error("Device not found: " + deviceId));
-          }
-          if (this._inputDevice && this._inputDevice.deviceId === deviceId && this._inputStream) {
-              if (!forceGetUserMedia) {
-                  return Promise.resolve();
-              }
-              // If the currently active track is still in readyState `live`, gUM may return the same track
-              // rather than returning a fresh track.
-              this._inputStream.getTracks().forEach(function (track) {
-                  track.stop();
-              });
-          }
-          var constraints = { audio: Object.assign({ deviceId: { exact: deviceId } }, this.audioConstraints) };
-          return this._getUserMedia(constraints).then(function (stream) {
-              return _this._onActiveInputChanged(stream).then(function () {
-                  _this._replaceStream(stream);
-                  _this._inputDevice = device;
-                  _this._maybeStartPollingVolume();
-              });
-          });
-      };
-      /**
-       * Update a set of devices.
-       * @param updatedDevices - An updated list of available Devices
-       * @param availableDevices - The previous list of available Devices
-       * @param removeLostDevice - The method to call if a previously available Device is
-       *   no longer available.
-       */
-      AudioHelper.prototype._updateDevices = function (updatedDevices, availableDevices, removeLostDevice) {
-          var _this = this;
-          var updatedDeviceIds = updatedDevices.map(function (d) { return d.deviceId; });
-          var knownDeviceIds = Array.from(availableDevices.values()).map(function (d) { return d.deviceId; });
-          var lostActiveDevices = [];
-          // Remove lost devices
-          var lostDeviceIds = util_1.difference(knownDeviceIds, updatedDeviceIds);
-          lostDeviceIds.forEach(function (lostDeviceId) {
-              var lostDevice = availableDevices.get(lostDeviceId);
-              if (lostDevice) {
-                  availableDevices.delete(lostDeviceId);
-                  if (removeLostDevice(lostDevice)) {
-                      lostActiveDevices.push(lostDevice);
-                  }
+          return enabledSounds[key];
+      }
+      Object.keys(enabledSounds).forEach(function (key) {
+          audioHelper[key] = setValue.bind(null, key);
+      });
+  }
+  /**
+   * Update the available input and output devices
+   * @param {AudioHelper} audio
+   * @returns {Promise}
+   * @private
+   */
+  function updateAvailableDevices(audio) {
+      return audio._mediaDevices.enumerateDevices().then(function (devices) {
+          updateDevices(audio, filterByKind(devices, 'audiooutput'), audio.availableOutputDevices, removeLostOutput);
+          updateDevices(audio, filterByKind(devices, 'audioinput'), audio.availableInputDevices, removeLostInput);
+          var defaultDevice = audio.availableOutputDevices.get('default')
+              || Array.from(audio.availableOutputDevices.values())[0];
+          [audio.speakerDevices, audio.ringtoneDevices].forEach(function (outputDevices) {
+              if (!outputDevices.get().size && audio.availableOutputDevices.size) {
+                  outputDevices.set(defaultDevice.deviceId);
               }
           });
-          // Add any new devices, or devices with updated labels
-          var deviceChanged = false;
-          updatedDevices.forEach(function (newDevice) {
-              var existingDevice = availableDevices.get(newDevice.deviceId);
-              var newMediaDeviceInfo = _this._wrapMediaDeviceInfo(newDevice);
-              if (!existingDevice || existingDevice.label !== newMediaDeviceInfo.label) {
-                  availableDevices.set(newDevice.deviceId, newMediaDeviceInfo);
-                  deviceChanged = true;
-              }
+      });
+  }
+  /**
+   * Remove an input device from outputs
+   * @param {AudioHelper} audio
+   * @param {MediaDeviceInfoShim} lostDevice
+   * @returns {boolean} wasActive
+   * @private
+   */
+  function removeLostOutput(audio, lostDevice) {
+      return audio.speakerDevices._delete(lostDevice) |
+          audio.ringtoneDevices._delete(lostDevice);
+  }
+  /**
+   * Remove an input device from inputs
+   * @param {AudioHelper} audio
+   * @param {MediaDeviceInfoShim} lostDevice
+   * @returns {boolean} wasActive
+   * @private
+   */
+  function removeLostInput(audio, lostDevice) {
+      if (!audio.inputDevice || audio.inputDevice.deviceId !== lostDevice.deviceId) {
+          return false;
+      }
+      replaceStream(audio, null);
+      audio._inputDevice = null;
+      audio._maybeStopPollingVolume();
+      var defaultDevice = audio.availableInputDevices.get('default')
+          || Array.from(audio.availableInputDevices.values())[0];
+      if (defaultDevice) {
+          audio.setInputDevice(defaultDevice.deviceId);
+      }
+      return true;
+  }
+  function filterByKind(devices, kind) {
+      return devices.filter(function (device) { return device.kind === kind; });
+  }
+  function getDeviceId(device) {
+      return device.deviceId;
+  }
+  function updateDevices(audio, updatedDevices, availableDevices, removeLostDevice) {
+      var updatedDeviceIds = updatedDevices.map(getDeviceId);
+      var knownDeviceIds = Array.from(availableDevices.values()).map(getDeviceId);
+      var lostActiveDevices = [];
+      // Remove lost devices
+      var lostDeviceIds = util.difference(knownDeviceIds, updatedDeviceIds);
+      lostDeviceIds.forEach(function (lostDeviceId) {
+          var lostDevice = availableDevices.get(lostDeviceId);
+          availableDevices.delete(lostDeviceId);
+          if (removeLostDevice(audio, lostDevice)) {
+              lostActiveDevices.push(lostDevice);
+          }
+      });
+      // Add any new devices, or devices with updated labels
+      var deviceChanged = false;
+      updatedDevices.forEach(function (newDevice) {
+          var existingDevice = availableDevices.get(newDevice.deviceId);
+          var newMediaDeviceInfo = wrapMediaDeviceInfo(audio, newDevice);
+          if (!existingDevice || existingDevice.label !== newMediaDeviceInfo.label) {
+              availableDevices.set(newDevice.deviceId, newMediaDeviceInfo);
+              deviceChanged = true;
+          }
+      });
+      if (deviceChanged || lostDeviceIds.length) {
+          // Force a new gUM in case the underlying tracks of the active stream have changed. One
+          //   reason this might happen is when `default` is selected and set to a USB device,
+          //   then that device is unplugged or plugged back in. We can't check for the 'ended'
+          //   event or readyState because it is asynchronous and may take upwards of 5 seconds,
+          //   in my testing. (rrowland)
+          if (audio.inputDevice !== null && audio.inputDevice.deviceId === 'default') {
+              audio.log.warn(['Calling getUserMedia after device change to ensure that the',
+                  'tracks of the active device (default) have not gone stale.'].join(' '));
+              audio._setInputDevice(audio._inputDevice.deviceId, true);
+          }
+          audio.emit('deviceChange', lostActiveDevices);
+      }
+  }
+  var kindAliases = {
+      audiooutput: 'Audio Output',
+      audioinput: 'Audio Input'
+  };
+  function getUnknownDeviceIndex(audioHelper, mediaDeviceInfo) {
+      var id = mediaDeviceInfo.deviceId;
+      var kind = mediaDeviceInfo.kind;
+      var unknownIndexes = audioHelper._unknownDeviceIndexes;
+      if (!unknownIndexes[kind]) {
+          unknownIndexes[kind] = {};
+      }
+      var index = unknownIndexes[kind][id];
+      if (!index) {
+          index = Object.keys(unknownIndexes[kind]).length + 1;
+          unknownIndexes[kind][id] = index;
+      }
+      return index;
+  }
+  function wrapMediaDeviceInfo(audioHelper, mediaDeviceInfo) {
+      var options = {
+          deviceId: mediaDeviceInfo.deviceId,
+          groupId: mediaDeviceInfo.groupId,
+          kind: mediaDeviceInfo.kind,
+          label: mediaDeviceInfo.label
+      };
+      if (!options.label) {
+          if (options.deviceId === 'default') {
+              options.label = 'Default';
+          }
+          else {
+              var index = getUnknownDeviceIndex(audioHelper, mediaDeviceInfo);
+              options.label = "Unknown " + kindAliases[options.kind] + " Device " + index;
+          }
+      }
+      return new MediaDeviceInfoShim(options);
+  }
+  function updateVolumeSource(audioHelper) {
+      if (audioHelper._inputVolumeSource) {
+          audioHelper._inputVolumeSource.disconnect();
+          audioHelper._inputVolumeSource = null;
+      }
+      audioHelper._inputVolumeSource = audioHelper._audioContext.createMediaStreamSource(audioHelper._inputStream);
+      audioHelper._inputVolumeSource.connect(audioHelper._inputVolumeAnalyser);
+  }
+  function replaceStream(audio, stream) {
+      if (audio._inputStream) {
+          audio._inputStream.getTracks().forEach(function (track) {
+              track.stop();
           });
-          if (deviceChanged || lostDeviceIds.length) {
-              // Force a new gUM in case the underlying tracks of the active stream have changed. One
-              //   reason this might happen is when `default` is selected and set to a USB device,
-              //   then that device is unplugged or plugged back in. We can't check for the 'ended'
-              //   event or readyState because it is asynchronous and may take upwards of 5 seconds,
-              //   in my testing. (rrowland)
-              if (this.inputDevice !== null && this.inputDevice.deviceId === 'default') {
-                  this._log.warn("Calling getUserMedia after device change to ensure that the           tracks of the active device (default) have not gone stale.");
-                  this._setInputDevice(this.inputDevice.deviceId, true);
-              }
-              this.emit('deviceChange', lostActiveDevices);
-          }
-      };
-      /**
-       * Disconnect the old input volume source, and create and connect a new one with the current
-       * input stream.
-       */
-      AudioHelper.prototype._updateVolumeSource = function () {
-          if (!this._inputStream || !this._audioContext || !this._inputVolumeAnalyser) {
-              return;
-          }
-          if (this._inputVolumeSource) {
-              this._inputVolumeSource.disconnect();
-          }
-          this._inputVolumeSource = this._audioContext.createMediaStreamSource(this._inputStream);
-          this._inputVolumeSource.connect(this._inputVolumeAnalyser);
-      };
-      /**
-       * Convert a MediaDeviceInfo to a IMediaDeviceInfoShim.
-       * @param mediaDeviceInfo - The info to convert
-       * @returns The converted shim
-       */
-      AudioHelper.prototype._wrapMediaDeviceInfo = function (mediaDeviceInfo) {
-          var options = {
-              deviceId: mediaDeviceInfo.deviceId,
-              groupId: mediaDeviceInfo.groupId,
-              kind: mediaDeviceInfo.kind,
-              label: mediaDeviceInfo.label,
-          };
-          if (!options.label) {
-              if (options.deviceId === 'default') {
-                  options.label = 'Default';
-              }
-              else {
-                  var index = this._getUnknownDeviceIndex(mediaDeviceInfo);
-                  options.label = "Unknown " + kindAliases[options.kind] + " Device " + index;
-              }
-          }
-          return new MediaDeviceInfoShim(options);
-      };
-      return AudioHelper;
-  }(events_1.EventEmitter));
-  (function (AudioHelper) {
-  })(AudioHelper || (AudioHelper = {}));
-  exports.default = AudioHelper;
+      }
+      audio._inputStream = stream;
+  }
+  module.exports = AudioHelper;
   
-  },{"./outputdevicecollection":11,"./shims/mediadeviceinfo":25,"./shims/mediadevices":26,"./tslog":28,"./util":29,"events":42}],5:[function(require,module,exports){
+  },{"./log":9,"./outputdevicecollection":10,"./shims/mediadeviceinfo":23,"./shims/mediadevices":24,"./util":27,"events":40,"util":51}],5:[function(require,module,exports){
   "use strict";
   var __extends = (this && this.__extends) || (function () {
       var extendStatics = Object.setPrototypeOf ||
@@ -665,38 +593,23 @@ This software includes backoff under the following (MIT) license.
           d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
       };
   })();
-  var __assign = (this && this.__assign) || Object.assign || function(t) {
-      for (var s, i = 1, n = arguments.length; i < n; i++) {
-          s = arguments[i];
-          for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p))
-              t[p] = s[p];
-      }
-      return t;
-  };
   Object.defineProperty(exports, "__esModule", { value: true });
-  /**
-   * @module Voice
-   * @publicapi
-   * @internal
-   */
   var events_1 = require("events");
   var device_1 = require("./device");
-  var monitor_1 = require("./rtc/monitor");
   var tslog_1 = require("./tslog");
-  var util_1 = require("./util");
   var C = require('./constants');
+  var Exception = require('./util').Exception;
   var PeerConnection = require('./rtc').PeerConnection;
-  var DTMF_INTER_TONE_GAP = 70;
-  var DTMF_PAUSE_DURATION = 500;
-  var DTMF_TONE_DURATION = 160;
-  var ICE_RESTART_INTERVAL = 3000;
-  var METRICS_BATCH_SIZE = 10;
-  var METRICS_DELAY = 5000;
+  var RTCMonitor = require('./rtc/monitor');
+  var util = require('util');
+  exports.DTMF_INTER_TONE_GAP = 70;
+  exports.DTMF_PAUSE_DURATION = 500;
+  exports.DTMF_TONE_DURATION = 160;
+  exports.METRICS_BATCH_SIZE = 10;
+  exports.METRICS_DELAY = 20000;
   var WARNING_NAMES = {
       audioInputLevel: 'audio-input-level',
       audioOutputLevel: 'audio-output-level',
-      bytesReceived: 'bytes-received',
-      bytesSent: 'bytes-sent',
       jitter: 'jitter',
       mos: 'mos',
       packetsLostFraction: 'packet-loss',
@@ -709,14 +622,56 @@ This software includes backoff under the following (MIT) license.
   };
   var hasBeenWarnedHandlers = false;
   /**
+   * Possible states of the {@link Connection}.
+   */
+  var ConnectionState;
+  (function (ConnectionState) {
+      ConnectionState["Closed"] = "closed";
+      ConnectionState["Connecting"] = "connecting";
+      ConnectionState["Open"] = "open";
+      ConnectionState["Pending"] = "pending";
+      ConnectionState["Ringing"] = "ringing";
+  })(ConnectionState = exports.ConnectionState || (exports.ConnectionState = {}));
+  /**
+   * Different issues that may have been experienced during a call, that can be
+   * reported to Twilio Insights via {@link Connection}.postFeedback().
+   */
+  var FeedbackIssue;
+  (function (FeedbackIssue) {
+      FeedbackIssue["AudioLatency"] = "audio-latency";
+      FeedbackIssue["ChoppyAudio"] = "choppy-audio";
+      FeedbackIssue["DroppedCall"] = "dropped-call";
+      FeedbackIssue["Echo"] = "echo";
+      FeedbackIssue["NoisyCall"] = "noisy-call";
+      FeedbackIssue["OneWayAudio"] = "one-way-audio";
+  })(FeedbackIssue = exports.FeedbackIssue || (exports.FeedbackIssue = {}));
+  /**
+   * A rating of call quality experienced during a call, to be reported to Twilio Insights
+   * via {@link Connection}.postFeedback().
+   */
+  var FeedbackScore;
+  (function (FeedbackScore) {
+      FeedbackScore[FeedbackScore["One"] = 1] = "One";
+      FeedbackScore[FeedbackScore["Two"] = 2] = "Two";
+      FeedbackScore[FeedbackScore["Three"] = 3] = "Three";
+      FeedbackScore[FeedbackScore["Four"] = 4] = "Four";
+      FeedbackScore[FeedbackScore["Five"] = 5] = "Five";
+  })(FeedbackScore = exports.FeedbackScore || (exports.FeedbackScore = {}));
+  /**
+   * The directionality of the {@link Connection}, whether incoming or outgoing.
+   */
+  var CallDirection;
+  (function (CallDirection) {
+      CallDirection["Incoming"] = "INCOMING";
+      CallDirection["Outgoing"] = "OUTGOING";
+  })(CallDirection = exports.CallDirection || (exports.CallDirection = {}));
+  /**
    * A {@link Connection} represents a media and signaling connection to a TwiML application.
-   * @publicapi
    */
   var Connection = /** @class */ (function (_super) {
       __extends(Connection, _super);
       /**
        * @constructor
-       * @private
        * @param config - Mandatory configuration options
        * @param [options] - Optional settings
        */
@@ -727,29 +682,17 @@ This software includes backoff under the following (MIT) license.
            */
           _this.parameters = {};
           /**
-           * The number of times input volume has been the same consecutively.
+           * The most recent input volume value.
            */
-          _this._inputVolumeStreak = 0;
+          _this._latestInputVolume = 0;
           /**
-           * Keeps track of internal input volumes in the last second
+           * The most recent output volume value.
            */
-          _this._internalInputVolumes = [];
-          /**
-           * Keeps track of internal output volumes in the last second
-           */
-          _this._internalOutputVolumes = [];
+          _this._latestOutputVolume = 0;
           /**
            * Whether the call has been answered.
            */
           _this._isAnswered = false;
-          /**
-           * The most recent public input volume value. 0 -> 1 representing -100 to -30 dB.
-           */
-          _this._latestInputVolume = 0;
-          /**
-           * The most recent public output volume value. 0 -> 1 representing -100 to -30 dB.
-           */
-          _this._latestOutputVolume = 0;
           /**
            * An instance of Log to use.
            */
@@ -760,17 +703,13 @@ This software includes backoff under the following (MIT) license.
            */
           _this._metricsSamples = [];
           /**
-           * The number of times output volume has been the same consecutively.
-           */
-          _this._outputVolumeStreak = 0;
-          /**
            * A Map of Sounds to play.
            */
           _this._soundcache = new Map();
           /**
            * State of the {@link Connection}.
            */
-          _this._status = Connection.State.Pending;
+          _this._status = ConnectionState.Pending;
           /**
            * Options passed to this {@link Connection}.
            */
@@ -779,7 +718,7 @@ This software includes backoff under the following (MIT) license.
               enableRingingState: false,
               mediaStreamFactory: PeerConnection,
               offerSdp: null,
-              shouldPlayDisconnect: function () { return true; },
+              shouldPlayDisconnect: true,
           };
           /**
            * Whether the {@link Connection} should send a hangup on disconnect.
@@ -787,41 +726,8 @@ This software includes backoff under the following (MIT) license.
           _this.sendHangup = true;
           /**
            * String representation of {@link Connection} instance.
-           * @private
            */
           _this.toString = function () { return '[Twilio.Connection instance]'; };
-          _this._emitWarning = function (groupPrefix, warningName, threshold, value, wasCleared) {
-              var groupSuffix = wasCleared ? '-cleared' : '-raised';
-              var groupName = groupPrefix + "warning" + groupSuffix;
-              // Ignore constant input if the Connection is muted (Expected)
-              if (warningName === 'constant-audio-input-level' && _this.isMuted()) {
-                  return;
-              }
-              var level = wasCleared ? 'info' : 'warning';
-              // Avoid throwing false positives as warnings until we refactor volume metrics
-              if (warningName === 'constant-audio-output-level') {
-                  level = 'info';
-              }
-              var payloadData = { threshold: threshold };
-              if (value) {
-                  if (value instanceof Array) {
-                      payloadData.values = value.map(function (val) {
-                          if (typeof val === 'number') {
-                              return Math.round(val * 100) / 100;
-                          }
-                          return value;
-                      });
-                  }
-                  else {
-                      payloadData.value = value;
-                  }
-              }
-              _this._publisher.post(level, groupName, warningName, { data: payloadData }, _this);
-              if (warningName !== 'constant-audio-output-level') {
-                  var emitName = wasCleared ? 'warning-cleared' : 'warning';
-                  _this.emit(emitName, warningName);
-              }
-          };
           /**
            * Called when the {@link Connection} is answered.
            * @param payload
@@ -846,7 +752,7 @@ This software includes backoff under the following (MIT) license.
               // (rrowland) Is this check necessary? Verify, and if so move to pstream / VSP module.
               var callsid = payload.callsid;
               if (_this.parameters.CallSid === callsid) {
-                  _this._status = Connection.State.Closed;
+                  _this._status = ConnectionState.Closed;
                   _this.emit('cancel');
                   _this.pstream.removeListener('cancel', _this._onCancel);
               }
@@ -893,12 +799,12 @@ This software includes backoff under the following (MIT) license.
           _this._onRinging = function (payload) {
               _this._setCallSid(payload);
               // If we're not in 'connecting' or 'ringing' state, this event was received out of order.
-              if (_this._status !== Connection.State.Connecting && _this._status !== Connection.State.Ringing) {
+              if (_this._status !== ConnectionState.Connecting && _this._status !== ConnectionState.Ringing) {
                   return;
               }
               var hasEarlyMedia = !!payload.sdp;
               if (_this.options.enableRingingState) {
-                  _this._status = Connection.State.Ringing;
+                  _this._status = ConnectionState.Ringing;
                   _this._publisher.info('connection', 'outgoing-ringing', { hasEarlyMedia: hasEarlyMedia }, _this);
                   _this.emit('ringing', hasEarlyMedia);
                   // answerOnBridge=false will send a 183, which we need to interpret as `answer` when
@@ -909,20 +815,17 @@ This software includes backoff under the following (MIT) license.
               }
           };
           /**
-           * Called each time RTCMonitor emits a sample.
-           * Emits stats event and batches the call stats metrics and sends them to Insights.
+           * Called each time RTCMonitor emits a sample. Batches the metrics samples and sends them
+           * to Insights.
            * @param sample
            */
           _this._onRTCSample = function (sample) {
-              var callMetrics = __assign({}, sample, { audioInputLevel: Math.round(util_1.average(_this._internalInputVolumes)), audioOutputLevel: Math.round(util_1.average(_this._internalOutputVolumes)), inputVolume: _this._latestInputVolume, outputVolume: _this._latestOutputVolume });
-              _this._internalInputVolumes.splice(0);
-              _this._internalOutputVolumes.splice(0);
-              _this._codec = callMetrics.codecName;
-              _this._metricsSamples.push(callMetrics);
-              if (_this._metricsSamples.length >= METRICS_BATCH_SIZE) {
+              sample.inputVolume = _this._latestInputVolume;
+              sample.outputVolume = _this._latestOutputVolume;
+              _this._metricsSamples.push(sample);
+              if (_this._metricsSamples.length >= exports.METRICS_BATCH_SIZE) {
                   _this._publishMetrics();
               }
-              _this.emit('sample', sample);
           };
           /**
            * Re-emit an RTCMonitor warning as a {@link Connection}.warning or .warning-cleared event.
@@ -932,9 +835,36 @@ This software includes backoff under the following (MIT) license.
           _this._reemitWarning = function (warningData, wasCleared) {
               var groupPrefix = /^audio/.test(warningData.name) ?
                   'audio-level-' : 'network-quality-';
+              var groupSuffix = wasCleared ? '-cleared' : '-raised';
+              var groupName = groupPrefix + "warning" + groupSuffix;
               var warningPrefix = WARNING_PREFIXES[warningData.threshold.name];
               var warningName = warningPrefix + WARNING_NAMES[warningData.name];
-              _this._emitWarning(groupPrefix, warningName, warningData.threshold.value, warningData.values || warningData.value, wasCleared);
+              // Ignore constant input if the Connection is muted (Expected)
+              if (warningName === 'constant-audio-input-level' && _this.isMuted()) {
+                  return;
+              }
+              var level = wasCleared ? 'info' : 'warning';
+              // Avoid throwing false positives as warnings until we refactor volume metrics
+              if (warningName === 'constant-audio-output-level') {
+                  level = 'info';
+              }
+              var payloadData = { threshold: warningData.threshold.value };
+              if (warningData.values) {
+                  payloadData.values = warningData.values.map(function (value) {
+                      if (typeof value === 'number') {
+                          return Math.round(value * 100) / 100;
+                      }
+                      return value;
+                  });
+              }
+              else if (warningData.value) {
+                  payloadData.value = warningData.value;
+              }
+              _this._publisher.post(level, groupName, warningName, { data: payloadData }, _this);
+              if (warningName !== 'constant-audio-output-level') {
+                  var emitName = wasCleared ? 'warning-cleared' : 'warning';
+                  _this.emit(emitName, warningName);
+              }
           };
           /**
            * Re-emit an RTCMonitor warning-cleared as a .warning-cleared event.
@@ -943,94 +873,42 @@ This software includes backoff under the following (MIT) license.
           _this._reemitWarningCleared = function (warningData) {
               _this._reemitWarning(warningData, true);
           };
-          _this._isUnifiedPlanDefault = config.isUnifiedPlanDefault;
           _this._soundcache = config.soundcache;
           _this.message = options && options.twimlParams || {};
-          _this.customParameters = new Map(Object.entries(_this.message).map(function (_a) {
-              var key = _a[0], val = _a[1];
-              return [key, String(val)];
-          }));
           Object.assign(_this.options, options);
           if (_this.options.callParameters) {
               _this.parameters = _this.options.callParameters;
           }
-          _this._direction = _this.parameters.CallSid ? Connection.CallDirection.Incoming : Connection.CallDirection.Outgoing;
+          _this._direction = _this.parameters.CallSid ? CallDirection.Incoming : CallDirection.Outgoing;
           _this._log.setLogLevel(_this.options.debug ? tslog_1.LogLevel.Debug
               : _this.options.warnings ? tslog_1.LogLevel.Warn
                   : tslog_1.LogLevel.Off);
           var publisher = _this._publisher = config.publisher;
-          if (_this._direction === Connection.CallDirection.Incoming) {
+          if (_this._direction === CallDirection.Incoming) {
               publisher.info('connection', 'incoming', null, _this);
           }
-          var monitor = _this._monitor = new (_this.options.RTCMonitor || monitor_1.default)();
+          var monitor = _this._monitor = new (_this.options.RTCMonitor || RTCMonitor)();
           monitor.on('sample', _this._onRTCSample);
           // First 20 seconds or so are choppy, so let's not bother with these warnings.
           monitor.disableWarnings();
-          setTimeout(function () { return monitor.enableWarnings(); }, METRICS_DELAY);
-          monitor.on('warning', function (data, wasCleared) {
-              var samples = data.samples, name = data.name;
-              if (_this.options.enableIceRestart && (name === 'bytesSent' || name === 'bytesReceived')) {
-                  if (samples && samples.every(function (sample) { return sample.totals[name] === 0; })) {
-                      // We don't have relevant samples yet, usually at the start of a call.
-                      // This also may mean the browser does not support the required fields.
-                      return;
-                  }
-                  _this._log.warn('ICE Connection disconnected.');
-                  // Stop existing loops if this warning is emitted multiple times
-                  _this._stopIceRestarts();
-                  _this._iceRestartIntervalId = setInterval(function () {
-                      _this.mediaStream.iceRestart().catch(function (canRetry) {
-                          if (!canRetry) {
-                              _this._log.info('Received hangup from the server. Stopping attempts to restart ICE.');
-                              _this._stopIceRestarts();
-                          }
-                      });
-                  }, ICE_RESTART_INTERVAL);
-              }
-              _this._reemitWarning(data, wasCleared);
-          });
-          monitor.on('warning-cleared', function (data) {
-              var samples = data.samples, name = data.name;
-              if (name === 'bytesSent' || name === 'bytesReceived') {
-                  if (samples && samples.every(function (sample) { return sample.totals[name] === 0; })) {
-                      // We don't have relevant samples yet, usually at the start of a call.
-                      // This also may mean the browser does not support the required fields.
-                      return;
-                  }
-                  _this._log.info('ICE Connection reestablished.');
-                  _this._stopIceRestarts();
-              }
-              _this._reemitWarningCleared(data);
-          });
+          setTimeout(function () { return monitor.enableWarnings(); }, exports.METRICS_DELAY);
+          monitor.on('warning', _this._reemitWarning);
+          monitor.on('warning-cleared', _this._reemitWarningCleared);
           _this.mediaStream = new (_this.options.MediaStream || _this.options.mediaStreamFactory)(config.audioHelper, config.pstream, config.getUserMedia, {
-              codecPreferences: _this.options.codecPreferences,
               debug: _this.options.debug,
-              dscp: _this.options.dscp,
-              enableIceRestart: _this.options.enableIceRestart,
-              isUnifiedPlan: _this._isUnifiedPlanDefault,
               warnings: _this.options.warnings,
           });
           _this.on('volume', function (inputVolume, outputVolume) {
-              _this._inputVolumeStreak = _this._checkVolume(inputVolume, _this._inputVolumeStreak, _this._latestInputVolume, 'input');
-              _this._outputVolumeStreak = _this._checkVolume(outputVolume, _this._outputVolumeStreak, _this._latestOutputVolume, 'output');
               _this._latestInputVolume = inputVolume;
               _this._latestOutputVolume = outputVolume;
           });
-          _this.mediaStream.onvolume = function (inputVolume, outputVolume, internalInputVolume, internalOutputVolume) {
-              // (rrowland) These values mock the 0 -> 32767 format used by legacy getStats. We should look into
-              // migrating to a newer standard, either 0.0 -> linear or -127 to 0 in dB, matching the range
-              // chosen below.
-              _this._internalInputVolumes.push((internalInputVolume / 255) * 32767);
-              _this._internalOutputVolumes.push((internalOutputVolume / 255) * 32767);
-              // (rrowland) 0.0 -> 1.0 linear
-              _this.emit('volume', inputVolume, outputVolume);
-          };
+          _this.mediaStream.onvolume = _this.emit.bind(_this, 'volume');
           _this.mediaStream.oniceconnectionstatechange = function (state) {
               var level = state === 'failed' ? 'error' : 'debug';
               _this._publisher.post(level, 'ice-connection-state', state, null, _this);
           };
           _this.mediaStream.onicegatheringstatechange = function (state) {
-              _this._publisher.debug('ice-gathering-state', state, null, _this);
+              _this._publisher.debug('signaling-state', state, null, _this);
           };
           _this.mediaStream.onsignalingstatechange = function (state) {
               _this._publisher.debug('signaling-state', state, null, _this);
@@ -1071,10 +949,10 @@ This software includes backoff under the following (MIT) license.
               // for _status 'open', we'd accidentally close the PeerConnection.
               //
               // See <https://code.google.com/p/webrtc/issues/detail?id=4996>.
-              if (_this._status === Connection.State.Open) {
+              if (_this._status === ConnectionState.Open) {
                   return;
               }
-              else if (_this._status === Connection.State.Ringing || _this._status === Connection.State.Connecting) {
+              else if (_this._status === ConnectionState.Ringing || _this._status === ConnectionState.Connecting) {
                   _this.mute(false);
                   _this._maybeTransitionToOpen();
               }
@@ -1084,12 +962,11 @@ This software includes backoff under the following (MIT) license.
               }
           };
           _this.mediaStream.onclose = function () {
-              _this._status = Connection.State.Closed;
-              if (_this.options.shouldPlayDisconnect && _this.options.shouldPlayDisconnect()) {
-                  _this._soundcache.get(device_1.default.SoundName.Disconnect).play();
+              _this._status = ConnectionState.Closed;
+              if (_this.options.shouldPlayDisconnect) {
+                  _this._soundcache.get(device_1.SoundName.Disconnect).play();
               }
               monitor.disable();
-              _this._stopIceRestarts();
               _this._publishMetrics();
               _this.emit('disconnect', _this);
           };
@@ -1098,12 +975,6 @@ This software includes backoff under the following (MIT) license.
           _this.pstream = config.pstream;
           _this.pstream.on('cancel', _this._onCancel);
           _this.pstream.on('ringing', _this._onRinging);
-          if (_this.options.enableIceRestart) {
-              // When websocket gets disconnected
-              // There's no way to retry this session so we disconnect
-              // This is not needed if ice restart is disabled, signaling will automatically disconnect the connection
-              _this.pstream.on('transportClosed', _this._disconnect.bind(_this));
-          }
           _this.on('error', function (error) {
               _this._publisher.error('connection', 'error', {
                   code: error.code, message: error.message,
@@ -1127,21 +998,9 @@ This software includes backoff under the following (MIT) license.
           enumerable: true,
           configurable: true
       });
-      Object.defineProperty(Connection.prototype, "codec", {
-          /**
-           * Audio codec used for this {@link Connection}. Expecting {@link Connection.Codec} but
-           * will copy whatever we get from RTC stats.
-           */
-          get: function () {
-              return this._codec;
-          },
-          enumerable: true,
-          configurable: true
-      });
       /**
        * Get the real CallSid. Returns null if not present or is a temporary call sid.
        * @deprecated
-       * @private
        */
       Connection.prototype._getRealCallSid = function () {
           this._log.warn('_getRealCallSid is deprecated and will be removed in 2.0.');
@@ -1150,28 +1009,11 @@ This software includes backoff under the following (MIT) license.
       /**
        * Get the temporary CallSid.
        * @deprecated
-       * @private
        */
       Connection.prototype._getTempCallSid = function () {
           this._log.warn('_getTempCallSid is deprecated and will be removed in 2.0. \
                       Please use outboundConnectionId instead.');
           return this.outboundConnectionId;
-      };
-      /**
-       * Set the audio input tracks from a given stream.
-       * @param stream
-       * @private
-       */
-      Connection.prototype._setInputTracksFromStream = function (stream) {
-          return this.mediaStream.setInputTracksFromStream(stream);
-      };
-      /**
-       * Set the audio output sink IDs.
-       * @param sinkIds
-       * @private
-       */
-      Connection.prototype._setSinkIds = function (sinkIds) {
-          return this.mediaStream._setSinkIds(sinkIds);
       };
       Connection.prototype.accept = function (handlerOrConstraints) {
           var _this = this;
@@ -1179,18 +1021,22 @@ This software includes backoff under the following (MIT) license.
               this._addHandler('accept', handlerOrConstraints);
               return;
           }
-          if (this._status !== Connection.State.Pending) {
+          if (this._status !== ConnectionState.Pending) {
               return;
           }
           var audioConstraints = handlerOrConstraints || this.options.audioConstraints;
-          this._status = Connection.State.Connecting;
+          this._status = ConnectionState.Connecting;
           var connect = function () {
-              if (_this._status !== Connection.State.Connecting) {
+              if (_this._status !== ConnectionState.Connecting) {
                   // call must have been canceled
                   _this._cleanupEventListeners();
                   _this.mediaStream.close();
                   return;
               }
+              var pairs = Object.entries(_this.message).map(function (_a) {
+                  var key = _a[0], value = _a[1];
+                  return encodeURIComponent(key) + "=" + encodeURIComponent(value);
+              });
               var onLocalAnswer = function (pc) {
                   _this._publisher.info('connection', 'accepted-by-local', null, _this);
                   _this._monitor.enable(pc);
@@ -1208,21 +1054,16 @@ This software includes backoff under the following (MIT) license.
                   });
               }
               _this.pstream.addListener('hangup', _this._onHangup);
-              if (_this._direction === Connection.CallDirection.Incoming) {
+              var params = pairs.join('&');
+              if (_this._direction === CallDirection.Incoming) {
                   _this._isAnswered = true;
-                  _this.mediaStream.answerIncomingCall(_this.parameters.CallSid, _this.options.offerSdp, _this.options.rtcConstraints, _this.options.rtcConfiguration, onLocalAnswer);
+                  _this.mediaStream.answerIncomingCall(_this.parameters.CallSid, _this.options.offerSdp, _this.options.rtcConstraints, _this.options.iceServers, onLocalAnswer);
               }
               else {
-                  var params = Array.from(_this.customParameters.entries()).map(function (pair) {
-                      return encodeURIComponent(pair[0]) + "=" + encodeURIComponent(pair[1]);
-                  }).join('&');
                   _this.pstream.once('answer', _this._onAnswer.bind(_this));
-                  _this.mediaStream.makeOutgoingCall(_this.pstream.token, params, _this.outboundConnectionId, _this.options.rtcConstraints, _this.options.rtcConfiguration, onRemoteAnswer);
+                  _this.mediaStream.makeOutgoingCall(_this.pstream.token, params, _this.outboundConnectionId, _this.options.rtcConstraints, _this.options.iceServers, onRemoteAnswer);
               }
           };
-          if (this.options.beforeAccept) {
-              this.options.beforeAccept(this);
-          }
           var inputStream = typeof this.options.getInputStream === 'function' && this.options.getInputStream();
           var promise = inputStream
               ? this.mediaStream.setInputTracksFromStream(inputStream)
@@ -1280,7 +1121,7 @@ This software includes backoff under the following (MIT) license.
           this._disconnect();
       };
       /**
-       * @deprecated - Set a handler for the {@link errorEvent}
+       * @deprecated - Set a handler for the error event.
        */
       Connection.prototype.error = function (handler) {
           if (typeof handler === 'function') {
@@ -1304,10 +1145,10 @@ This software includes backoff under the following (MIT) license.
               this._addHandler('cancel', handler);
               return;
           }
-          if (this._status !== Connection.State.Pending) {
+          if (this._status !== ConnectionState.Pending) {
               return;
           }
-          this._status = Connection.State.Closed;
+          this._status = ConnectionState.Closed;
           this.emit('cancel');
           this.mediaStream.ignore(this.parameters.CallSid);
           this._publisher.info('connection', 'ignored-by-local', null, this);
@@ -1332,6 +1173,20 @@ This software includes backoff under the following (MIT) license.
               this.emit('mute', isMuted, this);
           }
       };
+      Connection.prototype.reject = function (handler) {
+          if (typeof handler === 'function') {
+              this._addHandler('reject', handler);
+              return;
+          }
+          if (this._status !== ConnectionState.Pending) {
+              return;
+          }
+          var payload = { callsid: this.parameters.CallSid };
+          this.pstream.publish('reject', payload);
+          this.emit('reject');
+          this.mediaStream.reject(this.parameters.CallSid);
+          this._publisher.info('connection', 'rejected-by-local', null, this);
+      };
       /**
        * Post an event to Endpoint Analytics indicating that the end user
        *   has given call quality feedback. Called without a score, this
@@ -1347,30 +1202,16 @@ This software includes backoff under the following (MIT) license.
           if (typeof score === 'undefined' || score === null) {
               return this._postFeedbackDeclined();
           }
-          if (!Object.values(Connection.FeedbackScore).includes(score)) {
-              throw new Error("Feedback score must be one of: " + Object.values(Connection.FeedbackScore));
+          if (!Object.values(FeedbackScore).includes(score)) {
+              throw new Error("Feedback score must be one of: " + Object.values(FeedbackScore));
           }
-          if (typeof issue !== 'undefined' && issue !== null && !Object.values(Connection.FeedbackIssue).includes(issue)) {
-              throw new Error("Feedback issue must be one of: " + Object.values(Connection.FeedbackIssue));
+          if (typeof issue !== 'undefined' && issue !== null && !Object.values(FeedbackIssue).includes(issue)) {
+              throw new Error("Feedback issue must be one of: " + Object.values(FeedbackIssue));
           }
           return this._publisher.info('feedback', 'received', {
               issue_name: issue,
               quality_score: score,
           }, this, true);
-      };
-      Connection.prototype.reject = function (handler) {
-          if (typeof handler === 'function') {
-              this._addHandler('reject', handler);
-              return;
-          }
-          if (this._status !== Connection.State.Pending) {
-              return;
-          }
-          var payload = { callsid: this.parameters.CallSid };
-          this.pstream.publish('reject', payload);
-          this.emit('reject');
-          this.mediaStream.reject(this.parameters.CallSid);
-          this._publisher.info('connection', 'rejected-by-local', null, this);
       };
       /**
        * Send a string of digits.
@@ -1378,7 +1219,7 @@ This software includes backoff under the following (MIT) license.
        */
       Connection.prototype.sendDigits = function (digits) {
           if (digits.match(/[^0-9*#w]/)) {
-              throw new util_1.Exception('Illegal character passed into sendDigits');
+              throw new Exception('Illegal character passed into sendDigits');
           }
           var sequence = [];
           digits.split('').forEach(function (digit) {
@@ -1392,20 +1233,15 @@ This software includes backoff under the following (MIT) license.
               sequence.push(dtmf);
           });
           // Binds soundCache to be used in recursion until all digits have been played.
-          (function playNextDigit(soundCache, dialtonePlayer) {
+          (function playNextDigit(soundCache) {
               var digit = sequence.shift();
               if (digit) {
-                  if (dialtonePlayer) {
-                      dialtonePlayer.play(digit);
-                  }
-                  else {
-                      soundCache.get(digit).play();
-                  }
+                  soundCache.get(digit).play();
               }
               if (sequence.length) {
                   setTimeout(playNextDigit.bind(null, soundCache), 200);
               }
-          })(this._soundcache, this.options.dialtonePlayer);
+          })(this._soundcache);
           var dtmfSender = this.mediaStream.getOrCreateDTMFSender();
           function insertDTMF(dtmfs) {
               if (!dtmfs.length) {
@@ -1413,9 +1249,9 @@ This software includes backoff under the following (MIT) license.
               }
               var dtmf = dtmfs.shift();
               if (dtmf && dtmf.length) {
-                  dtmfSender.insertDTMF(dtmf, DTMF_TONE_DURATION, DTMF_INTER_TONE_GAP);
+                  dtmfSender.insertDTMF(dtmf, exports.DTMF_TONE_DURATION, exports.DTMF_INTER_TONE_GAP);
               }
-              setTimeout(insertDTMF.bind(null, dtmfs), DTMF_PAUSE_DURATION);
+              setTimeout(insertDTMF.bind(null, dtmfs), exports.DTMF_PAUSE_DURATION);
           }
           if (dtmfSender) {
               if (!('canInsertDTMF' in dtmfSender) || dtmfSender.canInsertDTMF) {
@@ -1459,7 +1295,10 @@ This software includes backoff under the following (MIT) license.
           this.mute(false);
       };
       /**
-       * @deprecated - Set a handler for the {@link volumeEvent}
+       * Fired on `requestAnimationFrame` (up to 60fps, depending on browser) with
+       *   the current input and output volumes, as a percentage of maximum
+       *   volume, between -100dB and -30dB. Represented by a floating point
+       *   number between 0.0 and 1.0, inclusive.
        * @param handler
        */
       Connection.prototype.volume = function (handler) {
@@ -1480,30 +1319,6 @@ This software includes backoff under the following (MIT) license.
           }
           this.addListener(eventName, handler);
           return this;
-      };
-      /**
-       * Check the volume passed, emitting a warning if one way audio is detected or cleared.
-       * @param currentVolume - The current volume for this direction
-       * @param streakFieldName - The name of the field on the {@link Connection} object that tracks how many times the
-       *   current value has been repeated consecutively.
-       * @param lastValueFieldName - The name of the field on the {@link Connection} object that tracks the most recent
-       *   volume for this direction
-       * @param direction - The directionality of this audio track, either 'input' or 'output'
-       * @returns The current streak; how many times in a row the same value has been polled.
-       */
-      Connection.prototype._checkVolume = function (currentVolume, currentStreak, lastValue, direction) {
-          var wasWarningRaised = currentStreak >= 10;
-          var newStreak = 0;
-          if (lastValue === currentVolume) {
-              newStreak = currentStreak;
-          }
-          if (newStreak >= 10) {
-              this._emitWarning('audio-level-', "constant-audio-" + direction + "-level", 10, newStreak, false);
-          }
-          else if (wasWarningRaised) {
-              this._emitWarning('audio-level-', "constant-audio-" + direction + "-level", 10, newStreak, true);
-          }
-          return newStreak;
       };
       /**
        * Clean up event listeners.
@@ -1540,7 +1355,6 @@ This software includes backoff under the following (MIT) license.
       Connection.prototype._createMetricPayload = function () {
           var payload = {
               call_sid: this.parameters.CallSid,
-              dscp: !!this.options.dscp,
               sdk_version: C.RELEASE_VERSION,
               selected_region: this.options.selectedRegion,
           };
@@ -1560,10 +1374,9 @@ This software includes backoff under the following (MIT) license.
        */
       Connection.prototype._disconnect = function (message, wasRemote) {
           message = typeof message === 'string' ? message : null;
-          this._stopIceRestarts();
-          if (this._status !== Connection.State.Open
-              && this._status !== Connection.State.Connecting
-              && this._status !== Connection.State.Ringing) {
+          if (this._status !== ConnectionState.Open
+              && this._status !== ConnectionState.Connecting
+              && this._status !== ConnectionState.Ringing) {
               return;
           }
           this._log.info('Disconnecting...');
@@ -1589,7 +1402,7 @@ This software includes backoff under the following (MIT) license.
        */
       Connection.prototype._maybeTransitionToOpen = function () {
           if (this.mediaStream && this.mediaStream.status === 'open' && this._isAnswered) {
-              this._status = Connection.State.Open;
+              this._status = ConnectionState.Open;
               this.emit('accept', this);
           }
       };
@@ -1608,7 +1421,7 @@ This software includes backoff under the following (MIT) license.
           if (this._metricsSamples.length === 0) {
               return;
           }
-          this._publisher.postMetrics('quality-metrics-samples', 'metrics-sample', this._metricsSamples.splice(0), this._createMetricPayload(), this).catch(function (e) {
+          this._publisher.postMetrics('quality-metrics-samples', 'metrics-sample', this._metricsSamples.splice(0), this._createMetricPayload()).catch(function (e) {
               _this._log.warn('Unable to post metrics to Insights. Received error:', e);
           });
       };
@@ -1625,72 +1438,26 @@ This software includes backoff under the following (MIT) license.
           this.mediaStream.callSid = callSid;
       };
       /**
-       * Stop ice restart loop
+       * Set the audio input tracks from a given stream.
+       * @param stream
        */
-      Connection.prototype._stopIceRestarts = function () {
-          clearInterval(this._iceRestartIntervalId);
+      Connection.prototype._setInputTracksFromStream = function (stream) {
+          return this.mediaStream.setInputTracksFromStream(stream);
+      };
+      /**
+       * Set the audio output sink IDs.
+       * @param sinkIds
+       */
+      Connection.prototype._setSinkIds = function (sinkIds) {
+          return this.mediaStream._setSinkIds(sinkIds);
       };
       /**
        * String representation of the {@link Connection} class.
-       * @private
        */
       Connection.toString = function () { return '[Twilio.Connection class]'; };
       return Connection;
   }(events_1.EventEmitter));
-  (function (Connection) {
-      /**
-       * Possible states of the {@link Connection}.
-       */
-      var State;
-      (function (State) {
-          State["Closed"] = "closed";
-          State["Connecting"] = "connecting";
-          State["Open"] = "open";
-          State["Pending"] = "pending";
-          State["Ringing"] = "ringing";
-      })(State = Connection.State || (Connection.State = {}));
-      /**
-       * Different issues that may have been experienced during a call, that can be
-       * reported to Twilio Insights via {@link Connection}.postFeedback().
-       */
-      var FeedbackIssue;
-      (function (FeedbackIssue) {
-          FeedbackIssue["AudioLatency"] = "audio-latency";
-          FeedbackIssue["ChoppyAudio"] = "choppy-audio";
-          FeedbackIssue["DroppedCall"] = "dropped-call";
-          FeedbackIssue["Echo"] = "echo";
-          FeedbackIssue["NoisyCall"] = "noisy-call";
-          FeedbackIssue["OneWayAudio"] = "one-way-audio";
-      })(FeedbackIssue = Connection.FeedbackIssue || (Connection.FeedbackIssue = {}));
-      /**
-       * A rating of call quality experienced during a call, to be reported to Twilio Insights
-       * via {@link Connection}.postFeedback().
-       */
-      var FeedbackScore;
-      (function (FeedbackScore) {
-          FeedbackScore[FeedbackScore["One"] = 1] = "One";
-          FeedbackScore[FeedbackScore["Two"] = 2] = "Two";
-          FeedbackScore[FeedbackScore["Three"] = 3] = "Three";
-          FeedbackScore[FeedbackScore["Four"] = 4] = "Four";
-          FeedbackScore[FeedbackScore["Five"] = 5] = "Five";
-      })(FeedbackScore = Connection.FeedbackScore || (Connection.FeedbackScore = {}));
-      /**
-       * The directionality of the {@link Connection}, whether incoming or outgoing.
-       */
-      var CallDirection;
-      (function (CallDirection) {
-          CallDirection["Incoming"] = "INCOMING";
-          CallDirection["Outgoing"] = "OUTGOING";
-      })(CallDirection = Connection.CallDirection || (Connection.CallDirection = {}));
-      /**
-       * Valid audio codecs to use for the media connection.
-       */
-      var Codec;
-      (function (Codec) {
-          Codec["Opus"] = "opus";
-          Codec["PCMU"] = "pcmu";
-      })(Codec = Connection.Codec || (Connection.Codec = {}));
-  })(Connection || (Connection = {}));
+  exports.default = Connection;
   function generateTempCallSid() {
       return 'TJSxxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
           /* tslint:disable:no-bitwise */
@@ -1700,14 +1467,13 @@ This software includes backoff under the following (MIT) license.
           return v.toString(16);
       });
   }
-  exports.default = Connection;
   
-  },{"./constants":6,"./device":7,"./rtc":16,"./rtc/monitor":18,"./tslog":28,"./util":29,"events":42}],6:[function(require,module,exports){
+  },{"./constants":6,"./device":7,"./rtc":15,"./rtc/monitor":17,"./tslog":26,"./util":27,"events":40,"util":51}],6:[function(require,module,exports){
   var pkg = require('../../package.json');
   module.exports.SOUNDS_BASE_URL = 'https://media.twiliocdn.com/sdk/js/client/sounds/releases/1.0.0';
   module.exports.RELEASE_VERSION = pkg.version;
   
-  },{"../../package.json":54}],7:[function(require,module,exports){
+  },{"../../package.json":52}],7:[function(require,module,exports){
   "use strict";
   var __extends = (this && this.__extends) || (function () {
       var extendStatics = Object.setPrototypeOf ||
@@ -1720,41 +1486,62 @@ This software includes backoff under the following (MIT) license.
       };
   })();
   Object.defineProperty(exports, "__esModule", { value: true });
-  /**
-   * @module Voice
-   * @preferred
-   * @publicapi
-   */
   var events_1 = require("events");
-  var audiohelper_1 = require("./audiohelper");
   var connection_1 = require("./connection");
-  var dialtonePlayer_1 = require("./dialtonePlayer");
   var pstream_1 = require("./pstream");
   var regions_1 = require("./regions");
   var tslog_1 = require("./tslog");
   var util_1 = require("./util");
+  var AudioHelper = require('./audiohelper');
   var C = require('./constants');
   var Publisher = require('./eventpublisher');
   var rtc = require('./rtc');
   var getUserMedia = require('./rtc/getusermedia');
   var Sound = require('./sound');
-  var isUnifiedPlanDefault = require('./util').isUnifiedPlanDefault;
-  /**
-   * @private
-   */
-  var networkInformation = navigator.connection
-      || navigator.mozConnection
-      || navigator.webkitConnection;
-  var REGISTRATION_INTERVAL = 30000;
-  var RINGTONE_PLAY_TIMEOUT = 2000;
+  exports.REGISTRATION_INTERVAL = 30000;
+  exports.RINGTONE_PLAY_TIMEOUT = 2000;
   var hasBeenWarnedHandlers = false;
   var hasBeenWarnedSounds = false;
   /**
+   * All possible {@link Device} statuses.
+   */
+  var DeviceStatus;
+  (function (DeviceStatus) {
+      DeviceStatus["Busy"] = "busy";
+      DeviceStatus["Offline"] = "offline";
+      DeviceStatus["Ready"] = "ready";
+  })(DeviceStatus = exports.DeviceStatus || (exports.DeviceStatus = {}));
+  /**
+   * Names of all sounds handled by the {@link Device}.
+   */
+  var SoundName;
+  (function (SoundName) {
+      SoundName["Incoming"] = "incoming";
+      SoundName["Outgoing"] = "outgoing";
+      SoundName["Disconnect"] = "disconnect";
+      SoundName["Dtmf0"] = "dtmf0";
+      SoundName["Dtmf1"] = "dtmf1";
+      SoundName["Dtmf2"] = "dtmf2";
+      SoundName["Dtmf3"] = "dtmf3";
+      SoundName["Dtmf4"] = "dtmf4";
+      SoundName["Dtmf5"] = "dtmf5";
+      SoundName["Dtmf6"] = "dtmf6";
+      SoundName["Dtmf7"] = "dtmf7";
+      SoundName["Dtmf8"] = "dtmf8";
+      SoundName["Dtmf9"] = "dtmf9";
+      SoundName["DtmfS"] = "dtmfs";
+      SoundName["DtmfH"] = "dtmfh";
+  })(SoundName = exports.SoundName || (exports.SoundName = {}));
+  /**
    * Twilio Device. Allows registration for incoming calls, and placing outgoing calls.
-   * @publicapi
    */
   var Device = /** @class */ (function (_super) {
       __extends(Device, _super);
+      /**
+       * @constructor
+       * @param [token] - A Twilio JWT token string granting this {@link Device} access.
+       * @param [options]
+       */
       function Device(token, options) {
           var _this = _super.call(this) || this;
           /**
@@ -1762,17 +1549,16 @@ This software includes backoff under the following (MIT) license.
            */
           _this.audio = null;
           /**
-           * An array of {@link Connection}s. Though only one can be active, multiple may exist when there
-           * are multiple incoming, unanswered {@link Connection}s.
+           * An array of connections. Though only one can be active, multiple may exist when there
+           * are multiple incoming, unanswered connections.
            */
           _this.connections = [];
           /**
-           * Whether or not {@link Device.setup} has been called.
+           * Whether or not Device.setup() has been called.
            */
           _this.isInitialized = false;
           /**
-           * Methods to enable/disable each sound. Empty if the {@link Device} has not
-           * yet been set up.
+           * Methods to enable/disable each sound.
            */
           _this.sounds = {};
           /**
@@ -1796,18 +1582,14 @@ This software includes backoff under the following (MIT) license.
            * Whether each sound is enabled.
            */
           _this._enabledSounds = (_a = {},
-              _a[Device.SoundName.Disconnect] = true,
-              _a[Device.SoundName.Incoming] = true,
-              _a[Device.SoundName.Outgoing] = true,
+              _a[SoundName.Disconnect] = true,
+              _a[SoundName.Incoming] = true,
+              _a[SoundName.Outgoing] = true,
               _a);
           /**
            * An instance of Log to use.
            */
           _this._log = new tslog_1.default(tslog_1.LogLevel.Off);
-          /**
-           * The current LogLevel
-           */
-          _this._logLevel = tslog_1.LogLevel.Off;
           /**
            * An Insights Event Publisher.
            */
@@ -1819,7 +1601,7 @@ This software includes backoff under the following (MIT) license.
           /**
            * The current status of the {@link Device}.
            */
-          _this._status = Device.Status.Offline;
+          _this._status = DeviceStatus.Offline;
           /**
            * Value of 'audio' determines whether we should be registered for incoming calls.
            */
@@ -1828,14 +1610,11 @@ This software includes backoff under the following (MIT) license.
            * The options passed to {@link Device} constructor or Device.setup.
            */
           _this.options = {
-              allowIncomingWhileBusy: false,
               audioConstraints: true,
               closeProtection: false,
-              codecPreferences: [connection_1.default.Codec.PCMU, connection_1.default.Codec.Opus],
               connectionFactory: connection_1.default,
               debug: false,
               dscp: true,
-              enableIceRestart: false,
               eventgw: 'eventgw.twilio.com',
               iceServers: [],
               noRegister: false,
@@ -1859,28 +1638,11 @@ This software includes backoff under the following (MIT) license.
            */
           _this.stream = null;
           /**
-           * Called on window's beforeunload event if closeProtection is enabled,
-           * preventing users from accidentally navigating away from an active call.
-           * @param event
-           */
-          _this._confirmClose = function (event) {
-              if (!_this._activeConnection) {
-                  return '';
-              }
-              var closeProtection = _this.options.closeProtection || false;
-              var confirmationMsg = typeof closeProtection !== 'string'
-                  ? 'A call is currently in-progress. Leaving or reloading this page will end the call.'
-                  : closeProtection;
-              (event || window.event).returnValue = confirmationMsg;
-              return confirmationMsg;
-          };
-          /**
            * Create the default Insights payload
            * @param [connection]
            */
           _this._createDefaultPayload = function (connection) {
               var payload = {
-                  dscp: !!_this.options.dscp,
                   platform: rtc.getMediaEngine(),
                   sdk_version: C.RELEASE_VERSION,
                   selected_region: _this.options.region,
@@ -1892,10 +1654,9 @@ This software includes backoff under the following (MIT) license.
               }
               if (connection) {
                   var callSid = connection.parameters.CallSid;
-                  setIfDefined('call_sid', /^TJ/.test(callSid) ? undefined : callSid);
+                  setIfDefined('call_sid', /^TJ/.test(callSid) ? null : callSid);
                   setIfDefined('temp_call_sid', connection.outboundConnectionId);
-                  setIfDefined('audio_codec', connection.codec);
-                  payload.direction = connection.direction;
+                  payload.direction = connection._direction;
               }
               var stream = _this.stream;
               if (stream) {
@@ -1950,8 +1711,7 @@ This software includes backoff under the following (MIT) license.
            * Called when an 'invite' event is received from the signaling stream.
            */
           _this._onSignalingInvite = function (payload) {
-              var wasBusy = !!_this._activeConnection;
-              if (wasBusy && !_this.options.allowIncomingWhileBusy) {
+              if (_this._activeConnection) {
                   _this._log.info('Device busy; ignoring incoming invite');
                   return;
               }
@@ -1959,20 +1719,18 @@ This software includes backoff under the following (MIT) license.
                   _this.emit('error', { message: 'Malformed invite from gateway' });
                   return;
               }
-              var callParameters = payload.parameters || {};
-              callParameters.CallSid = callParameters.CallSid || payload.callsid;
-              var customParameters = Object.assign({}, util_1.queryToJson(callParameters.Params));
-              var connection = _this._makeConnection(customParameters, {
-                  callParameters: callParameters,
+              var params = payload.parameters || {};
+              params.CallSid = params.CallSid || payload.callsid;
+              var connection = _this._makeConnection({}, {
+                  callParameters: params,
                   offerSdp: payload.sdp,
               });
               _this.connections.push(connection);
               connection.once('accept', function () {
-                  _this.soundcache.get(Device.SoundName.Incoming).stop();
-                  _this._publishNetworkChange();
+                  _this.soundcache.get(SoundName.Incoming).stop();
               });
-              var play = (_this._enabledSounds.incoming && !wasBusy)
-                  ? function () { return _this.soundcache.get(Device.SoundName.Incoming).play(); }
+              var play = _this._enabledSounds.incoming
+                  ? function () { return _this.soundcache.get(SoundName.Incoming).play(); }
                   : function () { return Promise.resolve(); };
               _this._showIncomingConnection(connection, play);
           };
@@ -1981,7 +1739,7 @@ This software includes backoff under the following (MIT) license.
            */
           _this._onSignalingOffline = function () {
               _this._log.info('Stream is offline');
-              _this._status = Device.Status.Offline;
+              _this._status = DeviceStatus.Offline;
               _this._region = null;
               _this.emit('offline', _this);
           };
@@ -1990,25 +1748,8 @@ This software includes backoff under the following (MIT) license.
            */
           _this._onSignalingReady = function () {
               _this._log.info('Stream is ready');
-              _this._status = Device.Status.Ready;
+              _this._status = DeviceStatus.Ready;
               _this.emit('ready', _this);
-          };
-          /**
-           * Publish a NetworkInformation#change event to Insights if there's an active {@link Connection}.
-           */
-          _this._publishNetworkChange = function () {
-              if (!_this._activeConnection) {
-                  return;
-              }
-              if (networkInformation) {
-                  _this._publisher.info('network-information', 'network-change', {
-                      connection_type: networkInformation.type,
-                      downlink: networkInformation.downlink,
-                      downlinkMax: networkInformation.downlinkMax,
-                      effective_type: networkInformation.effectiveType,
-                      rtt: networkInformation.rtt,
-                  }, _this._activeConnection);
-              }
           };
           /**
            * Update the input stream being used for calls so that any current call and all future calls
@@ -2058,7 +1799,6 @@ This software includes backoff under the following (MIT) license.
       Object.defineProperty(Device, "audioContext", {
           /**
            * The AudioContext to be used by {@link Device} instances.
-           * @private
            */
           get: function () {
               return Device._audioContext;
@@ -2069,7 +1809,6 @@ This software includes backoff under the following (MIT) license.
       Object.defineProperty(Device, "extension", {
           /**
            * Which sound file extension is supported.
-           * @private
            */
           get: function () {
               // NOTE(mroberts): Node workaround.
@@ -2104,13 +1843,12 @@ This software includes backoff under the following (MIT) license.
       });
       /**
        * String representation of {@link Device} class.
-       * @private
        */
       Device.toString = function () {
           return '[Twilio.Device class]';
       };
       /**
-       * Return the active {@link Connection}. Null or undefined for backward compatibility.
+       * Return the active @{link Connection}. Null or undefined for backward compatibility.
        */
       Device.prototype.activeConnection = function () {
           if (!this.isInitialized) {
@@ -2122,15 +1860,18 @@ This software includes backoff under the following (MIT) license.
           return this._activeConnection || this.connections[0];
       };
       /**
-       * @deprecated Set a handler for the cancel event.
+       * @deprecated - Set a handler for the cancel event.
        * @param handler
        */
       Device.prototype.cancel = function (handler) {
-          return this._addHandler(Device.EventName.Cancel, handler);
+          return this._addHandler('cancel', handler);
       };
+      /**
+       * @private
+       */
       Device.prototype.connect = function (paramsOrHandler, audioConstraints) {
           if (typeof paramsOrHandler === 'function') {
-              this._addHandler(Device.EventName.Connect, paramsOrHandler);
+              this._addHandler('connect', paramsOrHandler);
               return null;
           }
           this._throwUnlessSetup('connect');
@@ -2143,16 +1884,14 @@ This software includes backoff under the following (MIT) license.
           // Make sure any incoming connections are ignored
           this.connections.splice(0).forEach(function (conn) { return conn.ignore(); });
           // Stop the incoming sound if it's playing
-          this.soundcache.get(Device.SoundName.Incoming).stop();
+          this.soundcache.get(SoundName.Incoming).stop();
           connection.accept(audioConstraints);
-          this._publishNetworkChange();
           return connection;
       };
       /**
        * Destroy the {@link Device}, freeing references to be garbage collected.
        */
       Device.prototype.destroy = function () {
-          this._disconnectAll();
           this._stopRegistrationTimer();
           if (this.audio) {
               this.audio._unbind();
@@ -2161,21 +1900,17 @@ This software includes backoff under the following (MIT) license.
               this.stream.destroy();
               this.stream = null;
           }
-          if (networkInformation) {
-              networkInformation.removeEventListener('change', this._publishNetworkChange);
-          }
           if (typeof window !== 'undefined' && window.removeEventListener) {
               window.removeEventListener('beforeunload', this._confirmClose);
               window.removeEventListener('unload', this._disconnectAll);
           }
       };
       /**
-       * Set a handler for the disconnect event.
-       * @deprecated Use {@link Device.on}.
+       * @deprecated - Set a handler for the disconnect event.
        * @param handler
        */
       Device.prototype.disconnect = function (handler) {
-          return this._addHandler(Device.EventName.Disconnect, handler);
+          return this._addHandler('disconnect', handler);
       };
       /**
        * Disconnect all {@link Connection}s.
@@ -2185,62 +1920,47 @@ This software includes backoff under the following (MIT) license.
           this._disconnectAll();
       };
       /**
-       * Set a handler for the error event.
-       * @deprecated Use {@link Device.on}.
+       * @deprecated - Set a handler for the error event.
        * @param handler
        */
       Device.prototype.error = function (handler) {
-          return this._addHandler(Device.EventName.Error, handler);
+          return this._addHandler('error', handler);
       };
       /**
-       * Set a handler for the incoming event.
-       * @deprecated Use {@link Device.on}.
+       * @deprecated - Set a handler for the incoming event.
        * @param handler
        */
       Device.prototype.incoming = function (handler) {
-          return this._addHandler(Device.EventName.Incoming, handler);
+          return this._addHandler('incoming', handler);
       };
       /**
-       * Set a handler for the offline event.
-       * @deprecated Use {@link Device.on}.
+       * @deprecated - Set a handler for the offline event.
        * @param handler
        */
       Device.prototype.offline = function (handler) {
-          return this._addHandler(Device.EventName.Offline, handler);
+          return this._addHandler('offline', handler);
       };
       /**
-       * Set a handler for the ready event.
-       * @deprecated Use {@link Device.on}.
+       * @deprecated - Set a handler for the ready event.
        * @param handler
        */
       Device.prototype.ready = function (handler) {
-          return this._addHandler(Device.EventName.Ready, handler);
+          return this._addHandler('ready', handler);
       };
       /**
-       * Get the {@link Region} string the {@link Device} is currently connected to, or 'offline'
-       * if not connected.
+       * Get the region the {@link Device} is currently connected to.
        */
       Device.prototype.region = function () {
           this._throwUnlessSetup('region');
           return typeof this._region === 'string' ? this._region : 'offline';
       };
       /**
-       * Register to receive incoming calls. Does not need to be called unless {@link Device.unregisterPresence}
-       * has been called directly.
+       * Register to receive incoming calls.
        */
       Device.prototype.registerPresence = function () {
           this._throwUnlessSetup('registerPresence');
           this.mediaPresence.audio = true;
           this._sendPresence();
-          return this;
-      };
-      /**
-       * Remove an event listener
-       * @param event - The event name to stop listening for
-       * @param listener - The callback to remove
-       */
-      Device.prototype.removeListener = function (event, listener) {
-          events_1.EventEmitter.prototype.removeListener.call(this, event, listener);
           return this;
       };
       /**
@@ -2251,21 +1971,11 @@ This software includes backoff under the following (MIT) license.
       Device.prototype.setup = function (token, options) {
           var _this = this;
           if (options === void 0) { options = {}; }
-          if (!Device.isSupported && !options.ignoreBrowserSupport) {
-              if (window && window.location && window.location.protocol === 'http:') {
-                  throw new util_1.Exception("twilio.js wasn't able to find WebRTC browser support.           This is most likely because this page is served over http rather than https,           which does not support WebRTC in many browsers. Please load this page over https and           try again.");
-              }
+          if (!Device.isSupported) {
               throw new util_1.Exception("twilio.js 1.3+ SDKs require WebRTC/ORTC browser support.         For more information, see <https://www.twilio.com/docs/api/client/twilio-js>.         If you have any questions about this announcement, please contact         Twilio Support at <help@twilio.com>.");
           }
           if (!token) {
               throw new util_1.Exception('Token is required for Device.setup()');
-          }
-          if (typeof Device._isUnifiedPlanDefault === 'undefined') {
-              Device._isUnifiedPlanDefault = typeof window !== 'undefined'
-                  && typeof RTCPeerConnection !== 'undefined'
-                  && typeof RTCRtpTransceiver !== 'undefined'
-                  ? isUnifiedPlanDefault(window, window.navigator, RTCPeerConnection, RTCRtpTransceiver)
-                  : false;
           }
           if (!Device._audioContext) {
               if (typeof AudioContext !== 'undefined') {
@@ -2274,15 +1984,6 @@ This software includes backoff under the following (MIT) license.
               else if (typeof webkitAudioContext !== 'undefined') {
                   Device._audioContext = new webkitAudioContext();
               }
-          }
-          if (Device._audioContext && options.fakeLocalDTMF) {
-              if (!Device._dialtonePlayer) {
-                  Device._dialtonePlayer = new dialtonePlayer_1.default(Device._audioContext);
-              }
-          }
-          else if (Device._dialtonePlayer) {
-              Device._dialtonePlayer.cleanup();
-              delete Device._dialtonePlayer;
           }
           if (this.isInitialized) {
               this._log.info('Found existing Device; using new token but ignoring options');
@@ -2294,10 +1995,9 @@ This software includes backoff under the following (MIT) license.
           if (this.options.dscp) {
               this.options.rtcConstraints.optional = [{ googDscp: true }];
           }
-          this._logLevel = this.options.debug ? tslog_1.LogLevel.Debug
+          this._log = new (this.options.Log || tslog_1.default)(this.options.debug ? tslog_1.LogLevel.Debug
               : this.options.warnings ? tslog_1.LogLevel.Warn
-                  : tslog_1.LogLevel.Off;
-          this._log = new (this.options.Log || tslog_1.default)(this._logLevel);
+                  : tslog_1.LogLevel.Off);
           var getOrSetSound = function (key, value) {
               if (!hasBeenWarnedSounds) {
                   _this._log.warn('Device.sounds is deprecated and will be removed in the next breaking ' +
@@ -2309,8 +2009,7 @@ This software includes backoff under the following (MIT) license.
               }
               return _this._enabledSounds[key];
           };
-          [Device.SoundName.Disconnect, Device.SoundName.Incoming, Device.SoundName.Outgoing]
-              .forEach(function (eventName) {
+          [SoundName.Disconnect, SoundName.Incoming, SoundName.Outgoing].forEach(function (eventName) {
               _this.sounds[eventName] = getOrSetSound.bind(null, eventName);
           });
           var regionURI = regions_1.getRegionURI(this.options.region, function (newRegion) {
@@ -2353,13 +2052,11 @@ This software includes backoff under the following (MIT) license.
           if (this.options.publishEvents === false) {
               this._publisher.disable();
           }
-          if (networkInformation) {
-              networkInformation.addEventListener('change', this._publishNetworkChange);
-          }
-          this.audio = new (this.options.AudioHelper || audiohelper_1.default)(this._updateSinkIds, this._updateInputStream, getUserMedia, {
+          this.audio = new (this.options.AudioHelper || AudioHelper)(this._updateSinkIds, this._updateInputStream, getUserMedia, {
               audioContext: Device.audioContext,
               enabledSounds: this._enabledSounds,
-              logLevel: this._logLevel,
+              logEnabled: !!this.options.debug,
+              logWarnings: !!this.options.warnings,
           });
           this.audio.on('deviceChange', function (lostActiveDevices) {
               var activeConnection = _this._activeConnection;
@@ -2384,7 +2081,7 @@ This software includes backoff under the following (MIT) license.
           // removing this next breaking change. Any error should be caught by the
           // customer, and anything that's not a fatal error should not be emitted
           // via error event.
-          this.on(Device.EventName.Error, function () {
+          this.on('error', function () {
               if (_this.listenerCount('error') > 1) {
                   return;
               }
@@ -2397,11 +2094,10 @@ This software includes backoff under the following (MIT) license.
        */
       Device.prototype.status = function () {
           this._throwUnlessSetup('status');
-          return this._activeConnection ? Device.Status.Busy : this._status;
+          return this._activeConnection ? DeviceStatus.Busy : this._status;
       };
       /**
        * String representation of {@link Device} instance.
-       * @private
        */
       Device.prototype.toString = function () {
           return '[Twilio.Device instance]';
@@ -2425,6 +2121,19 @@ This software includes backoff under the following (MIT) license.
           this.register(token);
       };
       /**
+       * Register the {@link Device}
+       * @param token
+       */
+      Device.prototype.register = function (token) {
+          if (this.stream) {
+              this.stream.setToken(token);
+              this._publisher.setToken(token);
+          }
+          else {
+              this._setupStream(token);
+          }
+      };
+      /**
        * Add a handler for an EventEmitter and emit a deprecation warning on first call.
        * @param eventName - Name of the event
        * @param handler - A handler to call when the event is emitted
@@ -2436,6 +2145,31 @@ This software includes backoff under the following (MIT) license.
           }
           this.addListener(eventName, handler);
           return this;
+      };
+      /**
+       * Throw an Error if Device.setup has not been called for this instance.
+       * @param methodName - The name of the method being called before setup()
+       */
+      Device.prototype._throwUnlessSetup = function (methodName) {
+          if (!this.isInitialized) {
+              throw new Error("Call Device.setup() before " + methodName);
+          }
+      };
+      /**
+       * Called on window's beforeunload event if closeProtection is enabled,
+       * preventing users from accidentally navigating away from an active call.
+       * @param event
+       */
+      Device.prototype._confirmClose = function (event) {
+          if (!this._activeConnection) {
+              return '';
+          }
+          var closeProtection = this.options.closeProtection || false;
+          var confirmationMsg = typeof closeProtection !== 'string'
+              ? 'A call is currently in-progress. Leaving or reloading this page will end the call.'
+              : closeProtection;
+          (event || window.event).returnValue = confirmationMsg;
+          return confirmationMsg;
       };
       /**
        * Find a {@link Connection} by its CallSid.
@@ -2452,13 +2186,9 @@ This software includes backoff under the following (MIT) license.
        */
       Device.prototype._makeConnection = function (twimlParams, options) {
           var _this = this;
-          if (typeof Device._isUnifiedPlanDefault === 'undefined') {
-              throw new Error('Device has not been initialized.');
-          }
           var config = {
               audioHelper: this.audio,
               getUserMedia: getUserMedia,
-              isUnifiedPlanDefault: Device._isUnifiedPlanDefault,
               pstream: this.stream,
               publisher: this._publisher,
               soundcache: this.soundcache,
@@ -2468,24 +2198,13 @@ This software includes backoff under the following (MIT) license.
                   || this.options.mediaStreamFactory
                   || rtc.PeerConnection,
               audioConstraints: this.options.audioConstraints,
-              beforeAccept: function (conn) {
-                  if (!_this._activeConnection || _this._activeConnection === conn) {
-                      return;
-                  }
-                  _this._activeConnection.disconnect();
-                  _this._removeConnection(_this._activeConnection);
-              },
-              codecPreferences: this.options.codecPreferences,
               debug: this.options.debug,
-              dialtonePlayer: Device._dialtonePlayer,
-              dscp: this.options.dscp,
-              enableIceRestart: this.options.enableIceRestart,
               enableRingingState: this.options.enableRingingState,
               getInputStream: function () { return _this._connectionInputStream; },
               getSinkIds: function () { return _this._connectionSinkIds; },
-              rtcConfiguration: this.options.rtcConfiguration || { iceServers: this.options.iceServers },
+              iceServers: this.options.iceServers,
               rtcConstraints: this.options.rtcConstraints,
-              shouldPlayDisconnect: function () { return _this._enabledSounds.disconnect; },
+              shouldPlayDisconnect: this._enabledSounds.disconnect,
               twimlParams: twimlParams,
               warnings: this.options.warnings,
           }, options);
@@ -2493,11 +2212,9 @@ This software includes backoff under the following (MIT) license.
           connection.once('accept', function () {
               _this._removeConnection(connection);
               _this._activeConnection = connection;
-              if (_this.audio) {
-                  _this.audio._maybeStartPollingVolume();
-              }
-              if (connection.direction === connection_1.default.CallDirection.Outgoing && _this._enabledSounds.outgoing) {
-                  _this.soundcache.get(Device.SoundName.Outgoing).play();
+              _this.audio._maybeStartPollingVolume();
+              if (connection.direction === connection_1.CallDirection.Outgoing && _this._enabledSounds.outgoing) {
+                  _this.soundcache.get(SoundName.Outgoing).play();
               }
               _this.emit('connect', connection);
           });
@@ -2505,33 +2222,25 @@ This software includes backoff under the following (MIT) license.
               if (connection.status() === 'closed') {
                   _this._removeConnection(connection);
               }
-              if (_this.audio) {
-                  _this.audio._maybeStopPollingVolume();
-              }
+              _this.audio._maybeStopPollingVolume();
               _this._maybeStopIncomingSound();
               _this.emit('error', error);
           });
           connection.once('cancel', function () {
               _this._log.info("Canceled: " + connection.parameters.CallSid);
               _this._removeConnection(connection);
-              if (_this.audio) {
-                  _this.audio._maybeStopPollingVolume();
-              }
+              _this.audio._maybeStopPollingVolume();
               _this._maybeStopIncomingSound();
               _this.emit('cancel', connection);
           });
           connection.once('disconnect', function () {
-              if (_this.audio) {
-                  _this.audio._maybeStopPollingVolume();
-              }
+              _this.audio._maybeStopPollingVolume();
               _this._removeConnection(connection);
               _this.emit('disconnect', connection);
           });
           connection.once('reject', function () {
               _this._log.info("Rejected: " + connection.parameters.CallSid);
-              if (_this.audio) {
-                  _this.audio._maybeStopPollingVolume();
-              }
+              _this.audio._maybeStopPollingVolume();
               _this._removeConnection(connection);
               _this._maybeStopIncomingSound();
           });
@@ -2542,7 +2251,7 @@ This software includes backoff under the following (MIT) license.
        */
       Device.prototype._maybeStopIncomingSound = function () {
           if (!this.connections.length) {
-              this.soundcache.get(Device.SoundName.Incoming).stop();
+              this.soundcache.get(SoundName.Incoming).stop();
           }
       };
       /**
@@ -2560,6 +2269,22 @@ This software includes backoff under the following (MIT) license.
           }
       };
       /**
+       * Set up the connection to the signaling server.
+       * @param token
+       */
+      Device.prototype._setupStream = function (token) {
+          this._log.info('Setting up VSP');
+          this.stream = this.options.pStreamFactory(token, this.options.chunderw, {
+              debug: this.options.debug,
+          });
+          this.stream.addListener('close', this._onSignalingClose);
+          this.stream.addListener('connected', this._onSignalingConnected);
+          this.stream.addListener('error', this._onSignalingError);
+          this.stream.addListener('invite', this._onSignalingInvite);
+          this.stream.addListener('offline', this._onSignalingOffline);
+          this.stream.addListener('ready', this._onSignalingReady);
+      };
+      /**
        * Register with the signaling server.
        */
       Device.prototype._sendPresence = function () {
@@ -2575,21 +2300,22 @@ This software includes backoff under the following (MIT) license.
           }
       };
       /**
-       * Set up the connection to the signaling server.
-       * @param token
+       * Set a timeout to send another register message to the signaling server.
        */
-      Device.prototype._setupStream = function (token) {
-          this._log.info('Setting up VSP');
-          this.stream = this.options.pStreamFactory(token, this.options.chunderw, {
-              backoffMaxMs: this.options.backoffMaxMs,
-              debug: this.options.debug,
-          });
-          this.stream.addListener('close', this._onSignalingClose);
-          this.stream.addListener('connected', this._onSignalingConnected);
-          this.stream.addListener('error', this._onSignalingError);
-          this.stream.addListener('invite', this._onSignalingInvite);
-          this.stream.addListener('offline', this._onSignalingOffline);
-          this.stream.addListener('ready', this._onSignalingReady);
+      Device.prototype._startRegistrationTimer = function () {
+          var _this = this;
+          this._stopRegistrationTimer();
+          this.regTimer = setTimeout(function () {
+              _this._sendPresence();
+          }, exports.REGISTRATION_INTERVAL);
+      };
+      /**
+       * Stop sending registration messages to the signaling server.
+       */
+      Device.prototype._stopRegistrationTimer = function () {
+          if (this.regTimer) {
+              clearTimeout(this.regTimer);
+          }
       };
       /**
        * Start playing the incoming ringtone, and subsequently emit the incoming event.
@@ -2604,7 +2330,7 @@ This software includes backoff under the following (MIT) license.
               new Promise(function (resolve, reject) {
                   timeout = setTimeout(function () {
                       reject(new Error('Playing incoming ringtone took too long; it might not play. Continuing execution...'));
-                  }, RINGTONE_PLAY_TIMEOUT);
+                  }, exports.RINGTONE_PLAY_TIMEOUT);
               }),
           ]).catch(function (reason) {
               _this._log.info(reason.message);
@@ -2614,38 +2340,11 @@ This software includes backoff under the following (MIT) license.
           });
       };
       /**
-       * Set a timeout to send another register message to the signaling server.
-       */
-      Device.prototype._startRegistrationTimer = function () {
-          var _this = this;
-          this._stopRegistrationTimer();
-          this.regTimer = setTimeout(function () {
-              _this._sendPresence();
-          }, REGISTRATION_INTERVAL);
-      };
-      /**
-       * Stop sending registration messages to the signaling server.
-       */
-      Device.prototype._stopRegistrationTimer = function () {
-          if (this.regTimer) {
-              clearTimeout(this.regTimer);
-          }
-      };
-      /**
-       * Throw an Error if Device.setup has not been called for this instance.
-       * @param methodName - The name of the method being called before setup()
-       */
-      Device.prototype._throwUnlessSetup = function (methodName) {
-          if (!this.isInitialized) {
-              throw new Error("Call Device.setup() before " + methodName);
-          }
-      };
-      /**
        * Update the device IDs of output devices being used to play the incoming ringtone through.
        * @param sinkIds - An array of device IDs
        */
       Device.prototype._updateRingtoneSinkIds = function (sinkIds) {
-          return Promise.resolve(this.soundcache.get(Device.SoundName.Incoming).setSinkIds(sinkIds));
+          return Promise.resolve(this.soundcache.get(SoundName.Incoming).setSinkIds(sinkIds));
       };
       /**
        * Update the device IDs of output devices being used to play the non-ringtone sounds
@@ -2654,7 +2353,7 @@ This software includes backoff under the following (MIT) license.
        */
       Device.prototype._updateSpeakerSinkIds = function (sinkIds) {
           Array.from(this.soundcache.entries())
-              .filter(function (entry) { return entry[0] !== Device.SoundName.Incoming; })
+              .filter(function (entry) { return entry[0] !== SoundName.Incoming; })
               .forEach(function (entry) { return entry[1].setSinkIds(sinkIds); });
           this._connectionSinkIds = sinkIds;
           var connection = this._activeConnection;
@@ -2662,147 +2361,12 @@ This software includes backoff under the following (MIT) license.
               ? connection._setSinkIds(sinkIds)
               : Promise.resolve();
       };
-      /**
-       * Register the {@link Device}
-       * @param token
-       */
-      Device.prototype.register = function (token) {
-          if (this.stream) {
-              this.stream.setToken(token);
-              this._publisher.setToken(token);
-          }
-          else {
-              this._setupStream(token);
-          }
-      };
       return Device;
   }(events_1.EventEmitter));
-  (function (Device) {
-      /**
-       * All valid {@link Device} event names.
-       */
-      var EventName;
-      (function (EventName) {
-          EventName["Cancel"] = "cancel";
-          EventName["Connect"] = "connect";
-          EventName["Disconnect"] = "disconnect";
-          EventName["Error"] = "error";
-          EventName["Incoming"] = "incoming";
-          EventName["Offline"] = "offline";
-          EventName["Ready"] = "ready";
-      })(EventName = Device.EventName || (Device.EventName = {}));
-      /**
-       * All possible {@link Device} statuses.
-       */
-      var Status;
-      (function (Status) {
-          Status["Busy"] = "busy";
-          Status["Offline"] = "offline";
-          Status["Ready"] = "ready";
-      })(Status = Device.Status || (Device.Status = {}));
-      /**
-       * Names of all sounds handled by the {@link Device}.
-       */
-      var SoundName;
-      (function (SoundName) {
-          SoundName["Incoming"] = "incoming";
-          SoundName["Outgoing"] = "outgoing";
-          SoundName["Disconnect"] = "disconnect";
-          SoundName["Dtmf0"] = "dtmf0";
-          SoundName["Dtmf1"] = "dtmf1";
-          SoundName["Dtmf2"] = "dtmf2";
-          SoundName["Dtmf3"] = "dtmf3";
-          SoundName["Dtmf4"] = "dtmf4";
-          SoundName["Dtmf5"] = "dtmf5";
-          SoundName["Dtmf6"] = "dtmf6";
-          SoundName["Dtmf7"] = "dtmf7";
-          SoundName["Dtmf8"] = "dtmf8";
-          SoundName["Dtmf9"] = "dtmf9";
-          SoundName["DtmfS"] = "dtmfs";
-          SoundName["DtmfH"] = "dtmfh";
-      })(SoundName = Device.SoundName || (Device.SoundName = {}));
-  })(Device || (Device = {}));
   exports.default = Device;
   
-  },{"./audiohelper":4,"./connection":5,"./constants":6,"./dialtonePlayer":8,"./eventpublisher":9,"./pstream":12,"./regions":13,"./rtc":16,"./rtc/getusermedia":15,"./sound":27,"./tslog":28,"./util":29,"events":42}],8:[function(require,module,exports){
-  "use strict";
-  /**
-   * @module Tools
-   * @internalapi
-   */
-  Object.defineProperty(exports, "__esModule", { value: true });
-  /**
-   * A Map of DTMF Sound Names to their mock frequency pairs.
-   */
-  var bandFrequencies = {
-      dtmf0: [1360, 960],
-      dtmf1: [1230, 720],
-      dtmf2: [1360, 720],
-      dtmf3: [1480, 720],
-      dtmf4: [1230, 790],
-      dtmf5: [1360, 790],
-      dtmf6: [1480, 790],
-      dtmf7: [1230, 870],
-      dtmf8: [1360, 870],
-      dtmf9: [1480, 870],
-      dtmfh: [1480, 960],
-      dtmfs: [1230, 960],
-  };
-  var DialtonePlayer = /** @class */ (function () {
-      function DialtonePlayer(_context) {
-          var _this = this;
-          this._context = _context;
-          /**
-           * Gain nodes, reducing the frequency.
-           */
-          this._gainNodes = [];
-          this._gainNodes = [
-              this._context.createGain(),
-              this._context.createGain(),
-          ];
-          this._gainNodes.forEach(function (gainNode) {
-              gainNode.connect(_this._context.destination);
-              gainNode.gain.value = 0.1;
-              _this._gainNodes.push(gainNode);
-          });
-      }
-      DialtonePlayer.prototype.cleanup = function () {
-          this._gainNodes.forEach(function (gainNode) {
-              gainNode.disconnect();
-          });
-      };
-      /**
-       * Play the dual frequency tone for the passed DTMF name.
-       * @param sound
-       */
-      DialtonePlayer.prototype.play = function (sound) {
-          var _this = this;
-          var frequencies = bandFrequencies[sound];
-          if (!frequencies) {
-              throw new Error('Invalid DTMF sound name');
-          }
-          var oscillators = [
-              this._context.createOscillator(),
-              this._context.createOscillator(),
-          ];
-          oscillators.forEach(function (oscillator, i) {
-              oscillator.type = 'sine';
-              oscillator.frequency.value = frequencies[i];
-              oscillator.connect(_this._gainNodes[i]);
-              oscillator.start();
-              oscillator.stop(_this._context.currentTime + 0.1);
-              oscillator.addEventListener('ended', function () { return oscillator.disconnect(); });
-          });
-      };
-      return DialtonePlayer;
-  }());
-  exports.default = DialtonePlayer;
-  
-  },{}],9:[function(require,module,exports){
-  'use strict';
-  
+  },{"./audiohelper":4,"./connection":5,"./constants":6,"./eventpublisher":8,"./pstream":11,"./regions":12,"./rtc":15,"./rtc/getusermedia":14,"./sound":25,"./tslog":26,"./util":27,"events":40}],8:[function(require,module,exports){
   var request = require('./request');
-  
   /**
    * Builds Endpoint Analytics (EA) event payloads and sends them to
    *   the EA server.
@@ -2815,67 +2379,49 @@ This software includes backoff under the following (MIT) license.
    *   to the server. Currently ignores the request altogether, in the future this
    *   may store them in case publishing is re-enabled later. Defaults to true.
    */ /**
-      * @typedef {Object} EventPublisher.Options
-      * @property {String} [host='eventgw.twilio.com'] - The host address of the EA
-      *   server to publish to.
-      * @property {Object|Function} [defaultPayload] - A default payload to extend
-      *   when creating and sending event payloads. Also takes a function that
-      *   should return an object representing the default payload. This is
-      *   useful for fields that should always be present when they are
-      *   available, but are not always available.
-      */
+  * @typedef {Object} EventPublisher.Options
+  * @property {String} [host='eventgw.twilio.com'] - The host address of the EA
+  *   server to publish to.
+  * @property {Object|Function} [defaultPayload] - A default payload to extend
+  *   when creating and sending event payloads. Also takes a function that
+  *   should return an object representing the default payload. This is
+  *   useful for fields that should always be present when they are
+  *   available, but are not always available.
+  */
   function EventPublisher(productName, token, options) {
-    if (!(this instanceof EventPublisher)) {
-      return new EventPublisher(productName, token, options);
-    }
-  
-    // Apply default options
-    options = Object.assign({
-      defaultPayload: function defaultPayload() {
-        return {};
-      },
-  
-      host: 'eventgw.twilio.com'
-    }, options);
-  
-    var defaultPayload = options.defaultPayload;
-  
-    if (typeof defaultPayload !== 'function') {
-      defaultPayload = function defaultPayload() {
-        return Object.assign({}, options.defaultPayload);
-      };
-    }
-  
-    var isEnabled = true;
-    Object.defineProperties(this, {
-      _defaultPayload: { value: defaultPayload },
-      _isEnabled: {
-        get: function get() {
-          return isEnabled;
-        },
-        set: function set(_isEnabled) {
-          isEnabled = _isEnabled;
-        }
-      },
-      _host: { value: options.host },
-      _request: { value: options.request || request, writable: true },
-      _token: { value: token, writable: true },
-      isEnabled: {
-        enumerable: true,
-        get: function get() {
-          return isEnabled;
-        }
-      },
-      productName: { enumerable: true, value: productName },
-      token: {
-        enumerable: true,
-        get: function get() {
-          return this._token;
-        }
+      if (!(this instanceof EventPublisher)) {
+          return new EventPublisher(productName, token, options);
       }
-    });
+      // Apply default options
+      options = Object.assign({
+          defaultPayload: function () { return {}; },
+          host: 'eventgw.twilio.com'
+      }, options);
+      var defaultPayload = options.defaultPayload;
+      if (typeof defaultPayload !== 'function') {
+          defaultPayload = function () { return Object.assign({}, options.defaultPayload); };
+      }
+      var isEnabled = true;
+      Object.defineProperties(this, {
+          _defaultPayload: { value: defaultPayload },
+          _isEnabled: {
+              get: function () { return isEnabled; },
+              set: function (_isEnabled) { isEnabled = _isEnabled; }
+          },
+          _host: { value: options.host },
+          _request: { value: options.request || request },
+          _token: { value: token, writable: true },
+          isEnabled: {
+              enumerable: true,
+              get: function () { return isEnabled; }
+          },
+          productName: { enumerable: true, value: productName },
+          token: {
+              enumerable: true,
+              get: function () { return this._token; }
+          }
+      });
   }
-  
   /**
    * Post to an EA server.
    * @private
@@ -2891,48 +2437,42 @@ This software includes backoff under the following (MIT) license.
    * @returns {Promise} Fulfilled if the HTTP response is 20x.
    */
   EventPublisher.prototype._post = function _post(endpointName, level, group, name, payload, connection, force) {
-    if (!this.isEnabled && !force) {
-      return Promise.resolve();
-    }
-  
-    if (!connection || (!connection.parameters || !connection.parameters.CallSid) && !connection.outboundConnectionId) {
-      return Promise.resolve();
-    }
-  
-    var event = {
-      /* eslint-disable camelcase */
-      publisher: this.productName,
-      group: group,
-      name: name,
-      timestamp: new Date().toISOString(),
-      level: level.toUpperCase(),
-      payload_type: 'application/json',
-      private: false,
-      payload: payload && payload.forEach ? payload.slice(0) : Object.assign(this._defaultPayload(connection), payload)
-      /* eslint-enable camelcase */
-    };
-  
-    var requestParams = {
-      url: 'https://' + this._host + '/v4/' + endpointName,
-      body: event,
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Twilio-Token': this.token
+      if (!this.isEnabled && !force) {
+          return Promise.resolve();
       }
-    };
-  
-    var self = this;
-    return new Promise(function (resolve, reject) {
-      self._request.post(requestParams, function (err) {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
+      var event = {
+          /* eslint-disable camelcase */
+          publisher: this.productName,
+          group: group,
+          name: name,
+          timestamp: (new Date()).toISOString(),
+          level: level.toUpperCase(),
+          payload_type: 'application/json',
+          private: false,
+          payload: (payload && payload.forEach) ?
+              payload.slice(0) : Object.assign(this._defaultPayload(connection), payload)
+          /* eslint-enable camelcase */
+      };
+      var requestParams = {
+          url: "https://" + this._host + "/v4/" + endpointName,
+          body: event,
+          headers: {
+              'Content-Type': 'application/json',
+              'X-Twilio-Token': this.token
+          }
+      };
+      var self = this;
+      return new Promise(function (resolve, reject) {
+          self._request.post(requestParams, function (err) {
+              if (err) {
+                  reject(err);
+              }
+              else {
+                  resolve();
+              }
+          });
       });
-    });
   };
-  
   /**
    * Post an event to the EA server. Use this method when the level
    *  is dynamic. Otherwise, it's better practice to use the sugar
@@ -2946,9 +2486,8 @@ This software includes backoff under the following (MIT) license.
    * @returns {Promise} Fulfilled if the HTTP response is 20x.
    */
   EventPublisher.prototype.post = function post(level, group, name, payload, connection, force) {
-    return this._post('EndpointEvents', level, group, name, payload, connection, force);
+      return this._post('EndpointEvents', level, group, name, payload, connection, force);
   };
-  
   /**
    * Post a debug-level event to the EA server.
    * @param {String} group - The name of the group the event belongs to.
@@ -2959,9 +2498,8 @@ This software includes backoff under the following (MIT) license.
    * @returns {Promise} Fulfilled if the HTTP response is 20x.
    */
   EventPublisher.prototype.debug = function debug(group, name, payload, connection) {
-    return this.post('debug', group, name, payload, connection);
+      return this.post('debug', group, name, payload, connection);
   };
-  
   /**
    * Post an info-level event to the EA server.
    * @param {String} group - The name of the group the event belongs to.
@@ -2972,9 +2510,8 @@ This software includes backoff under the following (MIT) license.
    * @returns {Promise} Fulfilled if the HTTP response is 20x.
    */
   EventPublisher.prototype.info = function info(group, name, payload, connection) {
-    return this.post('info', group, name, payload, connection);
+      return this.post('info', group, name, payload, connection);
   };
-  
   /**
    * Post a warning-level event to the EA server.
    * @param {String} group - The name of the group the event belongs to.
@@ -2985,9 +2522,8 @@ This software includes backoff under the following (MIT) license.
    * @returns {Promise} Fulfilled if the HTTP response is 20x.
    */
   EventPublisher.prototype.warn = function warn(group, name, payload, connection) {
-    return this.post('warning', group, name, payload, connection);
+      return this.post('warning', group, name, payload, connection);
   };
-  
   /**
    * Post an error-level event to the EA server.
    * @param {String} group - The name of the group the event belongs to.
@@ -2998,9 +2534,8 @@ This software includes backoff under the following (MIT) license.
    * @returns {Promise} Fulfilled if the HTTP response is 20x.
    */
   EventPublisher.prototype.error = function error(group, name, payload, connection) {
-    return this.post('error', group, name, payload, connection);
+      return this.post('error', group, name, payload, connection);
   };
-  
   /**
    * Post a metrics event to the EA server.
    * @param {String} group - The name of the group the event belongs to.
@@ -3009,69 +2544,61 @@ This software includes backoff under the following (MIT) license.
    * @param {?Object} [customFields] - Custom fields to append to each payload.
    * @returns {Promise} Fulfilled if the HTTP response is 20x.
    */
-  EventPublisher.prototype.postMetrics = function postMetrics(group, name, metrics, customFields, connection) {
-    var _this = this;
-  
-    return new Promise(function (resolve) {
-      var samples = metrics.map(formatMetric).map(function (sample) {
-        return Object.assign(sample, customFields);
+  EventPublisher.prototype.postMetrics = function postMetrics(group, name, metrics, customFields) {
+      var self = this;
+      return new Promise(function (resolve) {
+          var samples = metrics
+              .map(formatMetric)
+              .map(function (sample) { return Object.assign(sample, customFields); });
+          resolve(self._post('EndpointMetrics', 'info', group, name, samples));
       });
-  
-      resolve(_this._post('EndpointMetrics', 'info', group, name, samples, connection));
-    });
   };
-  
   /**
    * Update the token to use to authenticate requests.
    * @param {string} token
    * @returns {void}
    */
   EventPublisher.prototype.setToken = function setToken(token) {
-    this._token = token;
+      this._token = token;
   };
-  
   /**
    * Enable the publishing of events.
    */
   EventPublisher.prototype.enable = function enable() {
-    this._isEnabled = true;
+      this._isEnabled = true;
   };
-  
   /**
    * Disable the publishing of events.
    */
   EventPublisher.prototype.disable = function disable() {
-    this._isEnabled = false;
+      this._isEnabled = false;
   };
-  
   function formatMetric(sample) {
-    return {
-      /* eslint-disable camelcase */
-      timestamp: new Date(sample.timestamp).toISOString(),
-      total_packets_received: sample.totals.packetsReceived,
-      total_packets_lost: sample.totals.packetsLost,
-      total_packets_sent: sample.totals.packetsSent,
-      total_bytes_received: sample.totals.bytesReceived,
-      total_bytes_sent: sample.totals.bytesSent,
-      packets_received: sample.packetsReceived,
-      packets_lost: sample.packetsLost,
-      packets_lost_fraction: sample.packetsLostFraction && Math.round(sample.packetsLostFraction * 100) / 100,
-      bytes_received: sample.bytesReceived,
-      bytes_sent: sample.bytesSent,
-      audio_codec: sample.codecName,
-      audio_level_in: sample.audioInputLevel,
-      audio_level_out: sample.audioOutputLevel,
-      call_volume_input: sample.inputVolume,
-      call_volume_output: sample.outputVolume,
-      jitter: sample.jitter,
-      rtt: sample.rtt,
-      mos: sample.mos && Math.round(sample.mos * 100) / 100
-      /* eslint-enable camelcase */
-    };
+      return {
+          /* eslint-disable camelcase */
+          timestamp: (new Date(sample.timestamp)).toISOString(),
+          total_packets_received: sample.totals.packetsReceived,
+          total_packets_lost: sample.totals.packetsLost,
+          total_packets_sent: sample.totals.packetsSent,
+          total_bytes_received: sample.totals.bytesReceived,
+          total_bytes_sent: sample.totals.bytesSent,
+          packets_received: sample.packetsReceived,
+          packets_lost: sample.packetsLost,
+          packets_lost_fraction: sample.packetsLostFraction &&
+              (Math.round(sample.packetsLostFraction * 100) / 100),
+          audio_level_in: sample.audioInputLevel,
+          audio_level_out: sample.audioOutputLevel,
+          call_volume_input: sample.inputVolume,
+          call_volume_output: sample.outputVolume,
+          jitter: sample.jitter,
+          rtt: sample.rtt,
+          mos: sample.mos && (Math.round(sample.mos * 100) / 100)
+          /* eslint-enable camelcase */
+      };
   }
-  
   module.exports = EventPublisher;
-  },{"./request":14}],10:[function(require,module,exports){
+  
+  },{"./request":13}],9:[function(require,module,exports){
   /**
    * Bestow logging powers.
    *
@@ -3164,126 +2691,128 @@ This software includes backoff under the following (MIT) license.
   }
   exports.mixinLog = mixinLog;
   
-  },{}],11:[function(require,module,exports){
-  "use strict";
-  Object.defineProperty(exports, "__esModule", { value: true });
-  /**
-   * @module Voice
-   */
-  var constants_1 = require("./constants");
-  var DEFAULT_TEST_SOUND_URL = constants_1.SOUNDS_BASE_URL + "/outgoing.mp3";
+  },{}],10:[function(require,module,exports){
+  var C = require('./constants');
+  var DEFAULT_TEST_SOUND_URL = C.SOUNDS_BASE_URL + "/outgoing.mp3";
   /**
    * A smart collection containing a Set of active output devices.
-   * @publicapi
+   * @class
+   * @private
+   * @param {string} name - The name of this collection of devices. This will be returned
+   *   with beforeChange.
+   * @param {Map<string, MediaDeviceInfo>} A Map of the available devices by their device ID
+   *   to search within for getting and setting devices. This Map may change externally.
+   * @param {OutputDeviceCollection~beforeChange} beforeChange
+   * @param {Boolean} isSupported - Whether or not this class is supported. If false,
+   *   functionality will be replaced with console warnings.
+   */ /**
+  * A callback to run before updating the collection after active devices are changed
+  *   via the public API. If this returns a Promise, the list of active devices will
+  *   not be updated until it is resolved.
+  * @callback OutputDeviceCollection~beforeChange
+  * @param {string} name - Name of the collection.
+  * @param {Array<MediaDeviceInfo>} devices - A list of MediaDeviceInfos representing the
+  *   now active set of devices.
+  */
+  function OutputDeviceCollection(name, availableDevices, beforeChange, isSupported) {
+      Object.defineProperties(this, {
+          _activeDevices: { value: new Set() },
+          _availableDevices: { value: availableDevices },
+          _beforeChange: { value: beforeChange },
+          _isSupported: { value: isSupported },
+          _name: { value: name }
+      });
+  }
+  /**
+   * Delete a device from the collection. If no devices remain, the 'default'
+   *   device will be added as the sole device. If no `default` device exists,
+   *   the first available device will be used.
+   * @private
+   * @returns {Boolean} wasDeleted
    */
-  var OutputDeviceCollection = /** @class */ (function () {
-      /**
-       * @private
-       */
-      function OutputDeviceCollection(_name, _availableDevices, _beforeChange, _isSupported) {
-          this._name = _name;
-          this._availableDevices = _availableDevices;
-          this._beforeChange = _beforeChange;
-          this._isSupported = _isSupported;
-          /**
-           * The currently active output devices.
-           */
-          this._activeDevices = new Set();
+  OutputDeviceCollection.prototype._delete = function _delete(device) {
+      var wasDeleted = this._activeDevices.delete(device);
+      var defaultDevice = this._availableDevices.get('default')
+          || Array.from(this._availableDevices.values())[0];
+      if (!this._activeDevices.size && defaultDevice) {
+          this._activeDevices.add(defaultDevice);
       }
-      /**
-       * Delete a device from the collection. If no devices remain, the 'default'
-       * device will be added as the sole device. If no `default` device exists,
-       * the first available device will be used.
-       * @param device - The device to delete from the collection
-       * @returns whether the device was present before it was deleted
-       */
-      OutputDeviceCollection.prototype.delete = function (device) {
-          var wasDeleted = !!(this._activeDevices.delete(device));
-          var defaultDevice = this._availableDevices.get('default')
-              || Array.from(this._availableDevices.values())[0];
-          if (!this._activeDevices.size && defaultDevice) {
-              this._activeDevices.add(defaultDevice);
+      // Call _beforeChange so that the implementation can react when a device is
+      // removed or lost.
+      var deviceIds = Array.from(this._activeDevices.values()).map(function (deviceInfo) { return deviceInfo.deviceId; });
+      this._beforeChange(this._name, deviceIds);
+      return wasDeleted;
+  };
+  /**
+   * Get the current set of devices.
+   * @returns {Set<MediaDeviceInfo>}
+   */
+  OutputDeviceCollection.prototype.get = function get() {
+      return this._activeDevices;
+  };
+  /**
+   * Replace the current set of devices with a new set of devices.
+   * @param {string|Array<string>} deviceIds - An ID or array of IDs
+   *   of devices to replace the existing devices with.
+   * @returns {Promise} - Rejects if this feature is not supported, any of the
+   *    supplied IDs are not found, or no IDs are passed.
+   */
+  OutputDeviceCollection.prototype.set = function set(deviceIds) {
+      if (!this._isSupported) {
+          return Promise.reject(new Error('This browser does not support audio output selection'));
+      }
+      deviceIds = Array.isArray(deviceIds) ? deviceIds : [deviceIds];
+      if (!deviceIds.length) {
+          return Promise.reject(new Error('Must specify at least one device to set'));
+      }
+      var missingIds = [];
+      var devices = deviceIds.map(function (id) {
+          var device = this._availableDevices.get(id);
+          if (!device) {
+              missingIds.push(id);
           }
-          // Call _beforeChange so that the implementation can react when a device is
-          // removed or lost.
-          var deviceIds = Array.from(this._activeDevices.values()).map(function (deviceInfo) { return deviceInfo.deviceId; });
-          this._beforeChange(this._name, deviceIds);
-          return !!wasDeleted;
-      };
-      /**
-       * Get the current set of devices.
-       */
-      OutputDeviceCollection.prototype.get = function () {
-          return this._activeDevices;
-      };
-      /**
-       * Replace the current set of devices with a new set of devices.
-       * @param deviceIdOrIds - An ID or array of IDs of devices to replace the existing devices with.
-       * @returns Rejects if this feature is not supported, any of the supplied IDs are not found,
-       * or no IDs are passed.
-       */
-      OutputDeviceCollection.prototype.set = function (deviceIdOrIds) {
-          var _this = this;
-          if (!this._isSupported) {
-              return Promise.reject(new Error('This browser does not support audio output selection'));
-          }
-          var deviceIds = Array.isArray(deviceIdOrIds) ? deviceIdOrIds : [deviceIdOrIds];
-          if (!deviceIds.length) {
-              return Promise.reject(new Error('Must specify at least one device to set'));
-          }
-          var missingIds = [];
-          var devices = deviceIds.map(function (id) {
-              var device = _this._availableDevices.get(id);
-              if (!device) {
-                  missingIds.push(id);
-              }
-              return device;
-          });
-          if (missingIds.length) {
-              return Promise.reject(new Error("Devices not found: " + missingIds.join(', ')));
-          }
-          return new Promise(function (resolve) {
-              resolve(_this._beforeChange(_this._name, deviceIds));
-          }).then(function () {
-              _this._activeDevices.clear();
-              devices.forEach(_this._activeDevices.add, _this._activeDevices);
-          });
-      };
-      /**
-       * Test the devices by playing audio through them.
-       * @param [soundUrl] - An optional URL. If none is specified, we will
-       *   play a default test tone.
-       * @returns Resolves with the result of the underlying HTMLAudioElements' play() calls.
-       */
-      OutputDeviceCollection.prototype.test = function (soundUrl) {
-          if (soundUrl === void 0) { soundUrl = DEFAULT_TEST_SOUND_URL; }
-          if (!this._isSupported) {
-              return Promise.reject(new Error('This browser does not support audio output selection'));
-          }
-          if (!this._activeDevices.size) {
-              return Promise.reject(new Error('No active output devices to test'));
-          }
-          return Promise.all(Array.from(this._activeDevices).map(function (device) {
-              var el;
-              // (rrowland) We need to wait for the oncanplay event because of a regression introduced
-              // in Chrome M72: https://bugs.chromium.org/p/chromium/issues/detail?id=930876
-              return new Promise(function (resolve) {
-                  el = new Audio(soundUrl);
-                  el.oncanplay = resolve;
-              }).then(function () { return el.setSinkId(device.deviceId).then(function () { return el.play(); }); });
-          }));
-      };
-      return OutputDeviceCollection;
-  }());
-  exports.default = OutputDeviceCollection;
+          return device;
+      }, this);
+      if (missingIds.length) {
+          return Promise.reject(new Error("Devices not found: " + missingIds.join(', ')));
+      }
+      var self = this;
+      function updateDevices() {
+          self._activeDevices.clear();
+          devices.forEach(self._activeDevices.add, self._activeDevices);
+      }
+      return new Promise(function (resolve) {
+          resolve(self._beforeChange(self._name, deviceIds));
+      }).then(updateDevices);
+  };
+  /**
+   * Test the devices by playing audio through them.
+   * @param {?string} [soundUrl] - An optional URL. If none is specified, we will
+   *   play a default test tone.
+   * @returns {Promise} Succeeds if the underlying .play() methods' Promises succeed.
+   */
+  OutputDeviceCollection.prototype.test = function test(soundUrl) {
+      if (!this._isSupported) {
+          return Promise.reject(new Error('This browser does not support audio output selection'));
+      }
+      soundUrl = soundUrl || DEFAULT_TEST_SOUND_URL;
+      if (!this._activeDevices.size) {
+          return Promise.reject(new Error('No active output devices to test'));
+      }
+      return Promise.all(Array.from(this._activeDevices).map(function (device) {
+          var el = new Audio([soundUrl]);
+          return el.setSinkId(device.deviceId).then(function () { return el.play(); });
+      }));
+  };
+  module.exports = OutputDeviceCollection;
   
-  },{"./constants":6}],12:[function(require,module,exports){
+  },{"./constants":6}],11:[function(require,module,exports){
   var C = require('./constants');
   var EventEmitter = require('events').EventEmitter;
   var util = require('util');
   var log = require('./log');
   var WSTransport = require('./wstransport').default;
-  var PSTREAM_VERSION = '1.5';
+  var PSTREAM_VERSION = '1.4';
   /**
    * Constructor for PStream objects.
    *
@@ -3297,7 +2826,6 @@ This software includes backoff under the following (MIT) license.
    * @param {string} token The Twilio capabilities JWT
    * @param {string} uri The PStream endpoint URI
    * @param {object} [options]
-   * @config {boolean} [options.backoffMaxMs=20000] Enable debugging
    * @config {boolean} [options.debug=false] Enable debugging
    */
   function PStream(token, uri, options) {
@@ -3356,7 +2884,6 @@ This software includes backoff under the following (MIT) license.
           self._destroy();
       });
       this.transport = new this.options.TransportFactory(this.uri, {
-          backoffMaxMs: this.options.backoffMaxMs,
           logLevel: this.options.debug ? 'debug' : 'off'
       });
       this.transport.on('close', this._handleTransportClose);
@@ -3368,7 +2895,6 @@ This software includes backoff under the following (MIT) license.
   }
   util.inherits(PStream, EventEmitter);
   PStream.prototype._handleTransportClose = function () {
-      this.emit('transportClosed');
       if (this.status !== 'disconnected') {
           if (this.status !== 'offline') {
               this.emit('offline', this);
@@ -3376,14 +2902,8 @@ This software includes backoff under the following (MIT) license.
           this.status = 'disconnected';
       }
   };
-  PStream.prototype._handleTransportError = function (error) {
-      if (!error) {
-          this.emit('error', { error: { code: 31000, message: 'Websocket closed without a provided reason' } });
-          return;
-      }
-      // We receive some errors without call metadata (just the error). We need to convert these
-      // to be contained within the 'error' field so that these errors match the expected format.
-      this.emit('error', typeof error.code !== 'undefined' ? { error: error } : error);
+  PStream.prototype._handleTransportError = function (err) {
+      this.emit('error', err);
   };
   PStream.prototype._handleTransportMessage = function (msg) {
       if (!msg || !msg.data || typeof msg.data !== 'string') {
@@ -3420,9 +2940,6 @@ This software includes backoff under the following (MIT) license.
           media: mediaCapabilities
       };
       this._publish('register', regPayload, true);
-  };
-  PStream.prototype.reinvite = function (sdp, callsid) {
-      this._publish('reinvite', { sdp: sdp, callsid: callsid }, false);
   };
   PStream.prototype._destroy = function () {
       this.transport.removeListener('close', this._handleTransportClose);
@@ -3465,17 +2982,12 @@ This software includes backoff under the following (MIT) license.
   }
   exports.PStream = PStream;
   
-  },{"./constants":6,"./log":10,"./wstransport":30,"events":42,"util":53}],13:[function(require,module,exports){
+  },{"./constants":6,"./log":9,"./wstransport":28,"events":40,"util":51}],12:[function(require,module,exports){
   "use strict";
   Object.defineProperty(exports, "__esModule", { value: true });
-  /**
-   * @module Voice
-   * This module describes valid and deprecated regions.
-   */
   var util_1 = require("./util");
   /**
    * Valid deprecated regions
-   * @private
    */
   var DeprecatedRegion;
   (function (DeprecatedRegion) {
@@ -3522,7 +3034,6 @@ This software includes backoff under the following (MIT) license.
       _a);
   /**
    * Region shortcodes. Maps the full region name from AWS to the Twilio shortcode.
-   * @private
    */
   exports.regionShortcodes = {
       ASIAPAC_SINGAPORE: Region.Sg1,
@@ -3536,7 +3047,6 @@ This software includes backoff under the following (MIT) license.
   };
   /**
    * Region URIs. Maps the Twilio shortcode to its Twilio endpoint URI.
-   * @private
    */
   var regionURIs = (_b = {},
       _b[Region.Au1] = 'chunderw-vpc-gll-au1.twilio.com',
@@ -3557,7 +3067,6 @@ This software includes backoff under the following (MIT) license.
       _b);
   /**
    * Get the URI associated with the passed shortcode.
-   * @private
    * @param region - The region shortcode. Defaults to gll.
    * @param [onDeprecated] - A callback containing the new region to be called when the passed region
    *   is deprecated.
@@ -3579,7 +3088,6 @@ This software includes backoff under the following (MIT) license.
   exports.getRegionURI = getRegionURI;
   /**
    * Get the region shortcode by its full AWS region string.
-   * @private
    * @param region - The region's full AWS string.
    */
   function getRegionShortcode(region) {
@@ -3588,35 +3096,27 @@ This software includes backoff under the following (MIT) license.
   exports.getRegionShortcode = getRegionShortcode;
   var _a, _b;
   
-  },{"./util":29}],14:[function(require,module,exports){
-  'use strict';
-  
+  },{"./util":27}],13:[function(require,module,exports){
   var XHR = require('xmlhttprequest').XMLHttpRequest;
-  
   function request(method, params, callback) {
-    var options = {};
-    options.XMLHttpRequest = options.XMLHttpRequest || XHR;
-    var xhr = new options.XMLHttpRequest();
-  
-    xhr.open(method, params.url, true);
-    xhr.onreadystatechange = function onreadystatechange() {
-      if (xhr.readyState !== 4) {
-        return;
+      var options = {};
+      options.XMLHttpRequest = options.XMLHttpRequest || XHR;
+      var xhr = new options.XMLHttpRequest();
+      xhr.open(method, params.url, true);
+      xhr.onreadystatechange = function onreadystatechange() {
+          if (xhr.readyState !== 4) {
+              return;
+          }
+          if (200 <= xhr.status && xhr.status < 300) {
+              callback(null, xhr.responseText);
+              return;
+          }
+          callback(new Error(xhr.responseText));
+      };
+      for (var headerName in params.headers) {
+          xhr.setRequestHeader(headerName, params.headers[headerName]);
       }
-  
-      if (200 <= xhr.status && xhr.status < 300) {
-        callback(null, xhr.responseText);
-        return;
-      }
-  
-      callback(new Error(xhr.responseText));
-    };
-  
-    for (var headerName in params.headers) {
-      xhr.setRequestHeader(headerName, params.headers[headerName]);
-    }
-  
-    xhr.send(JSON.stringify(params.body));
+      xhr.send(JSON.stringify(params.body));
   }
   /**
    * Use XMLHttpRequest to get a network resource.
@@ -3628,98 +3128,83 @@ This software includes backoff under the following (MIT) license.
    * @returns {response}
    **/
   var Request = request;
-  
   /**
    * Sugar function for request('GET', params, callback);
    * @param {Object} params - Request parameters
    * @param {Request~get} callback - The callback that handles the response.
    */
   Request.get = function get(params, callback) {
-    return new this('GET', params, callback);
+      return new this('GET', params, callback);
   };
-  
   /**
    * Sugar function for request('POST', params, callback);
    * @param {Object} params - Request parameters
    * @param {Request~post} callback - The callback that handles the response.
    */
   Request.post = function post(params, callback) {
-    return new this('POST', params, callback);
+      return new this('POST', params, callback);
   };
-  
   module.exports = Request;
-  },{"xmlhttprequest":2}],15:[function(require,module,exports){
-  'use strict';
   
-  var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) { return typeof obj; } : function (obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; };
-  
+  },{"xmlhttprequest":2}],14:[function(require,module,exports){
   var util = require('../util');
-  
   function getUserMedia(constraints, options) {
-    options = options || {};
-    options.util = options.util || util;
-    options.navigator = options.navigator || (typeof navigator !== 'undefined' ? navigator : null);
-  
-    return new Promise(function (resolve, reject) {
-      if (!options.navigator) {
-        throw new Error('getUserMedia is not supported');
-      }
-  
-      switch ('function') {
-        case _typeof(options.navigator.mediaDevices && options.navigator.mediaDevices.getUserMedia):
-          return resolve(options.navigator.mediaDevices.getUserMedia(constraints));
-        case _typeof(options.navigator.webkitGetUserMedia):
-          return options.navigator.webkitGetUserMedia(constraints, resolve, reject);
-        case _typeof(options.navigator.mozGetUserMedia):
-          return options.navigator.mozGetUserMedia(constraints, resolve, reject);
-        case _typeof(options.navigator.getUserMedia):
-          return options.navigator.getUserMedia(constraints, resolve, reject);
-        default:
-          throw new Error('getUserMedia is not supported');
-      }
-    }).catch(function (e) {
-      throw options.util.isFirefox() && e.name === 'NotReadableError' ? new Error('Firefox does not currently support opening multiple audio input tracks' + 'simultaneously, even across different tabs.\n' + 'Related Bugzilla thread: https://bugzilla.mozilla.org/show_bug.cgi?id=1299324') : e;
-    });
+      options = options || {};
+      options.util = options.util || util;
+      options.navigator = options.navigator
+          || (typeof navigator !== 'undefined' ? navigator : null);
+      return new Promise(function (resolve, reject) {
+          if (!options.navigator) {
+              throw new Error('getUserMedia is not supported');
+          }
+          switch ('function') {
+              case typeof (options.navigator.mediaDevices && options.navigator.mediaDevices.getUserMedia):
+                  return resolve(options.navigator.mediaDevices.getUserMedia(constraints));
+              case typeof options.navigator.webkitGetUserMedia:
+                  return options.navigator.webkitGetUserMedia(constraints, resolve, reject);
+              case typeof options.navigator.mozGetUserMedia:
+                  return options.navigator.mozGetUserMedia(constraints, resolve, reject);
+              case typeof options.navigator.getUserMedia:
+                  return options.navigator.getUserMedia(constraints, resolve, reject);
+              default:
+                  throw new Error('getUserMedia is not supported');
+          }
+      }).catch(function (e) {
+          throw (options.util.isFirefox() && e.name === 'NotReadableError')
+              ? new Error('Firefox does not currently support opening multiple audio input tracks' +
+                  'simultaneously, even across different tabs.\n' +
+                  'Related Bugzilla thread: https://bugzilla.mozilla.org/show_bug.cgi?id=1299324')
+              : e;
+      });
   }
-  
   module.exports = getUserMedia;
-  },{"../util":29}],16:[function(require,module,exports){
-  'use strict';
   
+  },{"../util":27}],15:[function(require,module,exports){
   var PeerConnection = require('./peerconnection');
-  
-  var _require = require('./rtcpc'),
-      test = _require.test;
-  
+  var test = require('./rtcpc').test;
   function enabled() {
-    return test();
+      return test();
   }
-  
   function getMediaEngine() {
-    return typeof RTCIceGatherer !== 'undefined' ? 'ORTC' : 'WebRTC';
+      return typeof RTCIceGatherer !== 'undefined' ? 'ORTC' : 'WebRTC';
   }
-  
   module.exports = {
-    enabled: enabled,
-    getMediaEngine: getMediaEngine,
-    PeerConnection: PeerConnection
+      enabled: enabled,
+      getMediaEngine: getMediaEngine,
+      PeerConnection: PeerConnection
   };
-  },{"./peerconnection":20,"./rtcpc":21}],17:[function(require,module,exports){
-  'use strict';
   
+  },{"./peerconnection":19,"./rtcpc":20}],16:[function(require,module,exports){
   /**
    * This file was imported from another project. If making changes to this file, please don't
    * make them here. Make them on the linked repo below, then copy back:
    * https://code.hq.twilio.com/client/MockRTCStatsReport
    */
-  
   /* eslint-disable no-undefined */
-  
   // The legacy max volume, which is the positive half of a signed short integer.
   var OLD_MAX_VOLUME = 32767;
-  
-  var NativeRTCStatsReport = typeof window !== 'undefined' ? window.RTCStatsReport : undefined;
-  
+  var NativeRTCStatsReport = typeof window !== 'undefined'
+      ? window.RTCStatsReport : undefined;
   /**
    * Create a MockRTCStatsReport wrapper around a Map of RTCStats objects. If RTCStatsReport is available
    *   natively, it will be inherited so that instanceof checks pass.
@@ -3729,51 +3214,48 @@ This software includes backoff under the following (MIT) license.
    *   with a MockRTCStatsReport object.
    */
   function MockRTCStatsReport(statsMap) {
-    if (!(this instanceof MockRTCStatsReport)) {
-      return new MockRTCStatsReport(statsMap);
-    }
-  
-    var self = this;
-    Object.defineProperties(this, {
-      size: {
-        enumerable: true,
-        get: function get() {
-          return self._map.size;
-        }
-      },
-      _map: { value: statsMap }
-    });
-  
-    this[Symbol.iterator] = statsMap[Symbol.iterator];
+      if (!(this instanceof MockRTCStatsReport)) {
+          return new MockRTCStatsReport(statsMap);
+      }
+      var self = this;
+      Object.defineProperties(this, {
+          size: {
+              enumerable: true,
+              get: function () {
+                  return self._map.size;
+              }
+          },
+          _map: { value: statsMap }
+      });
+      this[Symbol.iterator] = statsMap[Symbol.iterator];
   }
-  
   // If RTCStatsReport is available natively, inherit it. Keep our constructor.
   if (NativeRTCStatsReport) {
-    MockRTCStatsReport.prototype = Object.create(NativeRTCStatsReport.prototype);
-    MockRTCStatsReport.prototype.constructor = MockRTCStatsReport;
+      MockRTCStatsReport.prototype = Object.create(NativeRTCStatsReport.prototype);
+      MockRTCStatsReport.prototype.constructor = MockRTCStatsReport;
   }
-  
   // Map the Map-like read methods to the underlying Map
   ['entries', 'forEach', 'get', 'has', 'keys', 'values'].forEach(function (key) {
-    MockRTCStatsReport.prototype[key] = function () {
-      var _map;
-  
-      return (_map = this._map)[key].apply(_map, arguments);
-    };
+      MockRTCStatsReport.prototype[key] = function () {
+          var args = [];
+          for (var _i = 0; _i < arguments.length; _i++) {
+              args[_i] = arguments[_i];
+          }
+          return (_a = this._map)[key].apply(_a, args);
+          var _a;
+      };
   });
-  
   /**
    * Convert an array of RTCStats objects into a mock RTCStatsReport object.
    * @param {Array<RTCStats>}
    * @return {MockRTCStatsReport}
    */
   MockRTCStatsReport.fromArray = function fromArray(array) {
-    return new MockRTCStatsReport(array.reduce(function (map, rtcStats) {
-      map.set(rtcStats.id, rtcStats);
-      return map;
-    }, new Map()));
+      return new MockRTCStatsReport(array.reduce(function (map, rtcStats) {
+          map.set(rtcStats.id, rtcStats);
+          return map;
+      }, new Map()));
   };
-  
   /**
    * Convert a legacy RTCStatsResponse object into a mock RTCStatsReport object.
    * @param {RTCStatsResponse} statsResponse - An RTCStatsResponse object returned by the
@@ -3781,371 +3263,345 @@ This software includes backoff under the following (MIT) license.
    * @return {MockRTCStatsReport} A mock RTCStatsReport object.
    */
   MockRTCStatsReport.fromRTCStatsResponse = function fromRTCStatsResponse(statsResponse) {
-    var activeCandidatePairId = void 0;
-    var transportIds = new Map();
-  
-    var statsMap = statsResponse.result().reduce(function (map, report) {
-      var id = report.id;
-      switch (report.type) {
-        case 'googCertificate':
-          map.set(id, createRTCCertificateStats(report));
-          break;
-        case 'datachannel':
-          map.set(id, createRTCDataChannelStats(report));
-          break;
-        case 'googCandidatePair':
-          if (getBoolean(report, 'googActiveConnection')) {
-            activeCandidatePairId = id;
+      var activeCandidatePairId;
+      var transportIds = new Map();
+      var statsMap = statsResponse.result().reduce(function (map, report) {
+          var id = report.id;
+          switch (report.type) {
+              case 'googCertificate':
+                  map.set(id, createRTCCertificateStats(report));
+                  break;
+              case 'datachannel':
+                  map.set(id, createRTCDataChannelStats(report));
+                  break;
+              case 'googCandidatePair':
+                  if (getBoolean(report, 'googActiveConnection')) {
+                      activeCandidatePairId = id;
+                  }
+                  map.set(id, createRTCIceCandidatePairStats(report));
+                  break;
+              case 'localcandidate':
+                  map.set(id, createRTCIceCandidateStats(report, false));
+                  break;
+              case 'remotecandidate':
+                  map.set(id, createRTCIceCandidateStats(report, true));
+                  break;
+              case 'ssrc':
+                  if (isPresent(report, 'packetsReceived')) {
+                      map.set("rtp-" + id, createRTCInboundRTPStreamStats(report));
+                  }
+                  else {
+                      map.set("rtp-" + id, createRTCOutboundRTPStreamStats(report));
+                  }
+                  map.set("track-" + id, createRTCMediaStreamTrackStats(report));
+                  map.set("codec-" + id, createRTCCodecStats(report));
+                  break;
+              case 'googComponent':
+                  var transportReport = createRTCTransportStats(report);
+                  transportIds.set(transportReport.selectedCandidatePairId, id);
+                  map.set(id, createRTCTransportStats(report));
+                  break;
           }
-  
-          map.set(id, createRTCIceCandidatePairStats(report));
-          break;
-        case 'localcandidate':
-          map.set(id, createRTCIceCandidateStats(report, false));
-          break;
-        case 'remotecandidate':
-          map.set(id, createRTCIceCandidateStats(report, true));
-          break;
-        case 'ssrc':
-          if (isPresent(report, 'packetsReceived')) {
-            map.set('rtp-' + id, createRTCInboundRTPStreamStats(report));
-          } else {
-            map.set('rtp-' + id, createRTCOutboundRTPStreamStats(report));
+          return map;
+      }, new Map());
+      if (activeCandidatePairId) {
+          var activeTransportId = transportIds.get(activeCandidatePairId);
+          if (activeTransportId) {
+              statsMap.get(activeTransportId).dtlsState = 'connected';
           }
-  
-          map.set('track-' + id, createRTCMediaStreamTrackStats(report));
-          map.set('codec-' + id, createRTCCodecStats(report));
-          break;
-        case 'googComponent':
-          var transportReport = createRTCTransportStats(report);
-          transportIds.set(transportReport.selectedCandidatePairId, id);
-          map.set(id, createRTCTransportStats(report));
-          break;
       }
-  
-      return map;
-    }, new Map());
-  
-    if (activeCandidatePairId) {
-      var activeTransportId = transportIds.get(activeCandidatePairId);
-      if (activeTransportId) {
-        statsMap.get(activeTransportId).dtlsState = 'connected';
-      }
-    }
-  
-    return new MockRTCStatsReport(statsMap);
+      return new MockRTCStatsReport(statsMap);
   };
-  
   /**
    * @param {RTCLegacyStatsReport} report
    * @returns {RTCTransportStats}
    */
   function createRTCTransportStats(report) {
-    return {
-      type: 'transport',
-      id: report.id,
-      timestamp: Date.parse(report.timestamp),
-      bytesSent: undefined,
-      bytesReceived: undefined,
-      rtcpTransportStatsId: undefined,
-      dtlsState: undefined,
-      selectedCandidatePairId: report.stat('selectedCandidatePairId'),
-      localCertificateId: report.stat('localCertificateId'),
-      remoteCertificateId: report.stat('remoteCertificateId')
-    };
+      return {
+          type: 'transport',
+          id: report.id,
+          timestamp: Date.parse(report.timestamp),
+          bytesSent: undefined,
+          bytesReceived: undefined,
+          rtcpTransportStatsId: undefined,
+          dtlsState: undefined,
+          selectedCandidatePairId: report.stat('selectedCandidatePairId'),
+          localCertificateId: report.stat('localCertificateId'),
+          remoteCertificateId: report.stat('remoteCertificateId')
+      };
   }
-  
   /**
    * @param {RTCLegacyStatsReport} report
    * @returns {RTCCodecStats}
    */
   function createRTCCodecStats(report) {
-    return {
-      type: 'codec',
-      id: report.id,
-      timestamp: Date.parse(report.timestamp),
-      payloadType: undefined,
-      mimeType: report.stat('mediaType') + '/' + report.stat('googCodecName'),
-      clockRate: undefined,
-      channels: undefined,
-      sdpFmtpLine: undefined,
-      implementation: undefined
-    };
+      return {
+          type: 'codec',
+          id: report.id,
+          timestamp: Date.parse(report.timestamp),
+          payloadType: undefined,
+          mimeType: report.stat('mediaType') + "/" + report.stat('googCodecName'),
+          clockRate: undefined,
+          channels: undefined,
+          sdpFmtpLine: undefined,
+          implementation: undefined
+      };
   }
-  
   /**
    * @param {RTCLegacyStatsReport} report
    * @returns {RTCMediaStreamTrackStats}
    */
   function createRTCMediaStreamTrackStats(report) {
-    return {
-      type: 'track',
-      id: report.id,
-      timestamp: Date.parse(report.timestamp),
-      trackIdentifier: report.stat('googTrackId'),
-      remoteSource: undefined,
-      ended: undefined,
-      kind: report.stat('mediaType'),
-      detached: undefined,
-      ssrcIds: undefined,
-      frameWidth: isPresent(report, 'googFrameWidthReceived') ? getInt(report, 'googFrameWidthReceived') : getInt(report, 'googFrameWidthSent'),
-      frameHeight: isPresent(report, 'googFrameHeightReceived') ? getInt(report, 'googFrameHeightReceived') : getInt(report, 'googFrameHeightSent'),
-      framesPerSecond: undefined,
-      framesSent: getInt(report, 'framesEncoded'),
-      framesReceived: undefined,
-      framesDecoded: getInt(report, 'framesDecoded'),
-      framesDropped: undefined,
-      framesCorrupted: undefined,
-      partialFramesLost: undefined,
-      fullFramesLost: undefined,
-      audioLevel: isPresent(report, 'audioOutputLevel') ? getInt(report, 'audioOutputLevel') / OLD_MAX_VOLUME : (getInt(report, 'audioInputLevel') || 0) / OLD_MAX_VOLUME,
-      echoReturnLoss: getFloat(report, 'googEchoCancellationReturnLoss'),
-      echoReturnLossEnhancement: getFloat(report, 'googEchoCancellationReturnLossEnhancement')
-    };
+      return {
+          type: 'track',
+          id: report.id,
+          timestamp: Date.parse(report.timestamp),
+          trackIdentifier: report.stat('googTrackId'),
+          remoteSource: undefined,
+          ended: undefined,
+          kind: report.stat('mediaType'),
+          detached: undefined,
+          ssrcIds: undefined,
+          frameWidth: isPresent(report, 'googFrameWidthReceived')
+              ? getInt(report, 'googFrameWidthReceived')
+              : getInt(report, 'googFrameWidthSent'),
+          frameHeight: isPresent(report, 'googFrameHeightReceived')
+              ? getInt(report, 'googFrameHeightReceived')
+              : getInt(report, 'googFrameHeightSent'),
+          framesPerSecond: undefined,
+          framesSent: getInt(report, 'framesEncoded'),
+          framesReceived: undefined,
+          framesDecoded: getInt(report, 'framesDecoded'),
+          framesDropped: undefined,
+          framesCorrupted: undefined,
+          partialFramesLost: undefined,
+          fullFramesLost: undefined,
+          audioLevel: isPresent(report, 'audioOutputLevel')
+              ? getInt(report, 'audioOutputLevel') / OLD_MAX_VOLUME
+              : (getInt(report, 'audioInputLevel') || 0) / OLD_MAX_VOLUME,
+          echoReturnLoss: getFloat(report, 'googEchoCancellationReturnLoss'),
+          echoReturnLossEnhancement: getFloat(report, 'googEchoCancellationReturnLossEnhancement')
+      };
   }
-  
   /**
    * @param {RTCLegacyStatsReport} report
    * @param {boolean} isInbound - Whether to create an inbound stats object, or outbound.
    * @returns {RTCRTPStreamStats}
    */
   function createRTCRTPStreamStats(report, isInbound) {
-    return {
-      id: report.id,
-      timestamp: Date.parse(report.timestamp),
-      ssrc: report.stat('ssrc'),
-      associateStatsId: undefined,
-      isRemote: undefined,
-      mediaType: report.stat('mediaType'),
-      trackId: 'track-' + report.id,
-      transportId: report.stat('transportId'),
-      codecId: 'codec-' + report.id,
-      firCount: isInbound ? getInt(report, 'googFirsSent') : undefined,
-      pliCount: isInbound ? getInt(report, 'googPlisSent') : getInt(report, 'googPlisReceived'),
-      nackCount: isInbound ? getInt(report, 'googNacksSent') : getInt(report, 'googNacksReceived'),
-      sliCount: undefined,
-      qpSum: getInt(report, 'qpSum')
-    };
+      return {
+          id: report.id,
+          timestamp: Date.parse(report.timestamp),
+          ssrc: report.stat('ssrc'),
+          associateStatsId: undefined,
+          isRemote: undefined,
+          mediaType: report.stat('mediaType'),
+          trackId: "track-" + report.id,
+          transportId: report.stat('transportId'),
+          codecId: "codec-" + report.id,
+          firCount: isInbound
+              ? getInt(report, 'googFirsSent')
+              : undefined,
+          pliCount: isInbound
+              ? getInt(report, 'googPlisSent')
+              : getInt(report, 'googPlisReceived'),
+          nackCount: isInbound
+              ? getInt(report, 'googNacksSent')
+              : getInt(report, 'googNacksReceived'),
+          sliCount: undefined,
+          qpSum: getInt(report, 'qpSum')
+      };
   }
-  
   /**
    * @param {RTCLegacyStatsReport} report
    * @returns {RTCInboundRTPStreamStats}
    */
   function createRTCInboundRTPStreamStats(report) {
-    var rtp = createRTCRTPStreamStats(report, true);
-  
-    Object.assign(rtp, {
-      type: 'inbound-rtp',
-      packetsReceived: getInt(report, 'packetsReceived'),
-      bytesReceived: getInt(report, 'bytesReceived'),
-      packetsLost: getInt(report, 'packetsLost'),
-      jitter: convertMsToSeconds(report.stat('googJitterReceived')),
-      fractionLost: undefined,
-      roundTripTime: convertMsToSeconds(report.stat('googRtt')),
-      packetsDiscarded: undefined,
-      packetsRepaired: undefined,
-      burstPacketsLost: undefined,
-      burstPacketsDiscarded: undefined,
-      burstLossCount: undefined,
-      burstDiscardCount: undefined,
-      burstLossRate: undefined,
-      burstDiscardRate: undefined,
-      gapLossRate: undefined,
-      gapDiscardRate: undefined,
-      framesDecoded: getInt(report, 'framesDecoded')
-    });
-  
-    return rtp;
+      var rtp = createRTCRTPStreamStats(report, true);
+      Object.assign(rtp, {
+          type: 'inbound-rtp',
+          packetsReceived: getInt(report, 'packetsReceived'),
+          bytesReceived: getInt(report, 'bytesReceived'),
+          packetsLost: getInt(report, 'packetsLost'),
+          jitter: convertMsToSeconds(report.stat('googJitterReceived')),
+          fractionLost: undefined,
+          roundTripTime: convertMsToSeconds(report.stat('googRtt')),
+          packetsDiscarded: undefined,
+          packetsRepaired: undefined,
+          burstPacketsLost: undefined,
+          burstPacketsDiscarded: undefined,
+          burstLossCount: undefined,
+          burstDiscardCount: undefined,
+          burstLossRate: undefined,
+          burstDiscardRate: undefined,
+          gapLossRate: undefined,
+          gapDiscardRate: undefined,
+          framesDecoded: getInt(report, 'framesDecoded')
+      });
+      return rtp;
   }
-  
   /**
    * @param {RTCLegacyStatsReport} report
    * @returns {RTCOutboundRTPStreamStats}
    */
   function createRTCOutboundRTPStreamStats(report) {
-    var rtp = createRTCRTPStreamStats(report, false);
-  
-    Object.assign(rtp, {
-      type: 'outbound-rtp',
-      remoteTimestamp: undefined,
-      packetsSent: getInt(report, 'packetsSent'),
-      bytesSent: getInt(report, 'bytesSent'),
-      targetBitrate: undefined,
-      framesEncoded: getInt(report, 'framesEncoded')
-    });
-  
-    return rtp;
+      var rtp = createRTCRTPStreamStats(report, false);
+      Object.assign(rtp, {
+          type: 'outbound-rtp',
+          remoteTimestamp: undefined,
+          packetsSent: getInt(report, 'packetsSent'),
+          bytesSent: getInt(report, 'bytesSent'),
+          targetBitrate: undefined,
+          framesEncoded: getInt(report, 'framesEncoded')
+      });
+      return rtp;
   }
-  
   /**
    * @param {RTCLegacyStatsReport} report
    * @param {boolean} isRemote - Whether to create for a remote candidate, or local candidate.
    * @returns {RTCIceCandidateStats}
    */
   function createRTCIceCandidateStats(report, isRemote) {
-    return {
-      type: isRemote ? 'remote-candidate' : 'local-candidate',
-      id: report.id,
-      timestamp: Date.parse(report.timestamp),
-      transportId: undefined,
-      isRemote: isRemote,
-      ip: report.stat('ipAddress'),
-      port: getInt(report, 'portNumber'),
-      protocol: report.stat('transport'),
-      candidateType: translateCandidateType(report.stat('candidateType')),
-      priority: getFloat(report, 'priority'),
-      url: undefined,
-      relayProtocol: undefined,
-      deleted: undefined
-    };
+      return {
+          type: isRemote
+              ? 'remote-candidate'
+              : 'local-candidate',
+          id: report.id,
+          timestamp: Date.parse(report.timestamp),
+          transportId: undefined,
+          isRemote: isRemote,
+          ip: report.stat('ipAddress'),
+          port: getInt(report, 'portNumber'),
+          protocol: report.stat('transport'),
+          candidateType: translateCandidateType(report.stat('candidateType')),
+          priority: getFloat(report, 'priority'),
+          url: undefined,
+          relayProtocol: undefined,
+          deleted: undefined
+      };
   }
-  
   /**
    * @param {RTCLegacyStatsReport} report
    * @returns {RTCIceCandidatePairStats}
    */
   function createRTCIceCandidatePairStats(report) {
-    return {
-      type: 'candidate-pair',
-      id: report.id,
-      timestamp: Date.parse(report.timestamp),
-      transportId: report.stat('googChannelId'),
-      localCandidateId: report.stat('localCandidateId'),
-      remoteCandidateId: report.stat('remoteCandidateId'),
-      state: undefined,
-      priority: undefined,
-      nominated: undefined,
-      writable: getBoolean(report, 'googWritable'),
-      readable: undefined,
-      bytesSent: getInt(report, 'bytesSent'),
-      bytesReceived: getInt(report, 'bytesReceived'),
-      lastPacketSentTimestamp: undefined,
-      lastPacketReceivedTimestamp: undefined,
-      totalRoundTripTime: undefined,
-      currentRoundTripTime: convertMsToSeconds(report.stat('googRtt')),
-      availableOutgoingBitrate: undefined,
-      availableIncomingBitrate: undefined,
-      requestsReceived: getInt(report, 'requestsReceived'),
-      requestsSent: getInt(report, 'requestsSent'),
-      responsesReceived: getInt(report, 'responsesReceived'),
-      responsesSent: getInt(report, 'responsesSent'),
-      retransmissionsReceived: undefined,
-      retransmissionsSent: undefined,
-      consentRequestsSent: getInt(report, 'consentRequestsSent')
-    };
+      return {
+          type: 'candidate-pair',
+          id: report.id,
+          timestamp: Date.parse(report.timestamp),
+          transportId: report.stat('googChannelId'),
+          localCandidateId: report.stat('localCandidateId'),
+          remoteCandidateId: report.stat('remoteCandidateId'),
+          state: undefined,
+          priority: undefined,
+          nominated: undefined,
+          writable: getBoolean(report, 'googWritable'),
+          readable: undefined,
+          bytesSent: getInt(report, 'bytesSent'),
+          bytesReceived: getInt(report, 'bytesReceived'),
+          lastPacketSentTimestamp: undefined,
+          lastPacketReceivedTimestamp: undefined,
+          totalRoundTripTime: undefined,
+          currentRoundTripTime: convertMsToSeconds(report.stat('googRtt')),
+          availableOutgoingBitrate: undefined,
+          availableIncomingBitrate: undefined,
+          requestsReceived: getInt(report, 'requestsReceived'),
+          requestsSent: getInt(report, 'requestsSent'),
+          responsesReceived: getInt(report, 'responsesReceived'),
+          responsesSent: getInt(report, 'responsesSent'),
+          retransmissionsReceived: undefined,
+          retransmissionsSent: undefined,
+          consentRequestsSent: getInt(report, 'consentRequestsSent')
+      };
   }
-  
   /**
    * @param {RTCLegacyStatsReport} report
    * @returns {RTCIceCertificateStats}
    */
   function createRTCCertificateStats(report) {
-    return {
-      type: 'certificate',
-      id: report.id,
-      timestamp: Date.parse(report.timestamp),
-      fingerprint: report.stat('googFingerprint'),
-      fingerprintAlgorithm: report.stat('googFingerprintAlgorithm'),
-      base64Certificate: report.stat('googDerBase64'),
-      issuerCertificateId: report.stat('googIssuerId')
-    };
+      return {
+          type: 'certificate',
+          id: report.id,
+          timestamp: Date.parse(report.timestamp),
+          fingerprint: report.stat('googFingerprint'),
+          fingerprintAlgorithm: report.stat('googFingerprintAlgorithm'),
+          base64Certificate: report.stat('googDerBase64'),
+          issuerCertificateId: report.stat('googIssuerId')
+      };
   }
-  
   /**
    * @param {RTCLegacyStatsReport} report
    * @returns {RTCDataChannelStats}
    */
   function createRTCDataChannelStats(report) {
-    return {
-      type: 'data-channel',
-      id: report.id,
-      timestamp: Date.parse(report.timestamp),
-      label: report.stat('label'),
-      protocol: report.stat('protocol'),
-      datachannelid: report.stat('datachannelid'),
-      transportId: report.stat('transportId'),
-      state: report.stat('state'),
-      messagesSent: undefined,
-      bytesSent: undefined,
-      messagesReceived: undefined,
-      bytesReceived: undefined
-    };
+      return {
+          type: 'data-channel',
+          id: report.id,
+          timestamp: Date.parse(report.timestamp),
+          label: report.stat('label'),
+          protocol: report.stat('protocol'),
+          datachannelid: report.stat('datachannelid'),
+          transportId: report.stat('transportId'),
+          state: report.stat('state'),
+          messagesSent: undefined,
+          bytesSent: undefined,
+          messagesReceived: undefined,
+          bytesReceived: undefined
+      };
   }
-  
   /**
    * @param {number} inMs - A time in milliseconds
    * @returns {number} The time in seconds
    */
   function convertMsToSeconds(inMs) {
-    return isNaN(inMs) || inMs === '' ? undefined : parseInt(inMs, 10) / 1000;
+      return isNaN(inMs) || inMs === ''
+          ? undefined
+          : parseInt(inMs, 10) / 1000;
   }
-  
   /**
    * @param {string} type - A type in the legacy format
    * @returns {string} The type adjusted to new standards for known naming changes
    */
   function translateCandidateType(type) {
-    switch (type) {
-      case 'peerreflexive':
-        return 'prflx';
-      case 'serverreflexive':
-        return 'srflx';
-      case 'host':
-      case 'relay':
-      default:
-        return type;
-    }
-  }
-  
-  function getInt(report, statName) {
-    var stat = report.stat(statName);
-    return isPresent(report, statName) ? parseInt(stat, 10) : undefined;
-  }
-  
-  function getFloat(report, statName) {
-    var stat = report.stat(statName);
-    return isPresent(report, statName) ? parseFloat(stat) : undefined;
-  }
-  
-  function getBoolean(report, statName) {
-    var stat = report.stat(statName);
-    return isPresent(report, statName) ? stat === 'true' || stat === true : undefined;
-  }
-  
-  function isPresent(report, statName) {
-    var stat = report.stat(statName);
-    return typeof stat !== 'undefined' && stat !== '';
-  }
-  
-  module.exports = MockRTCStatsReport;
-  },{}],18:[function(require,module,exports){
-  "use strict";
-  /**
-   * @module Voice
-   * @internalapi
-   */
-  var __extends = (this && this.__extends) || (function () {
-      var extendStatics = Object.setPrototypeOf ||
-          ({ __proto__: [] } instanceof Array && function (d, b) { d.__proto__ = b; }) ||
-          function (d, b) { for (var p in b) if (b.hasOwnProperty(p)) d[p] = b[p]; };
-      return function (d, b) {
-          extendStatics(d, b);
-          function __() { this.constructor = d; }
-          d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
-      };
-  })();
-  var __assign = (this && this.__assign) || Object.assign || function(t) {
-      for (var s, i = 1, n = arguments.length; i < n; i++) {
-          s = arguments[i];
-          for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p))
-              t[p] = s[p];
+      switch (type) {
+          case 'peerreflexive':
+              return 'prflx';
+          case 'serverreflexive':
+              return 'srflx';
+          case 'host':
+          case 'relay':
+          default:
+              return type;
       }
-      return t;
-  };
-  Object.defineProperty(exports, "__esModule", { value: true });
-  var events_1 = require("events");
-  var getRTCStats = require('./stats');
+  }
+  function getInt(report, statName) {
+      var stat = report.stat(statName);
+      return isPresent(report, statName)
+          ? parseInt(stat, 10)
+          : undefined;
+  }
+  function getFloat(report, statName) {
+      var stat = report.stat(statName);
+      return isPresent(report, statName)
+          ? parseFloat(stat)
+          : undefined;
+  }
+  function getBoolean(report, statName) {
+      var stat = report.stat(statName);
+      return isPresent(report, statName)
+          ? (stat === 'true' || stat === true)
+          : undefined;
+  }
+  function isPresent(report, statName) {
+      var stat = report.stat(statName);
+      return typeof stat !== 'undefined' && stat !== '';
+  }
+  module.exports = MockRTCStatsReport;
+  
+  },{}],17:[function(require,module,exports){
+  var EventEmitter = require('events').EventEmitter;
+  var getStatistics = require('./stats');
+  var inherits = require('util').inherits;
   var Mos = require('./mos');
   // How many samples we use when testing metric thresholds
   var SAMPLE_COUNT_METRICS = 5;
@@ -4155,392 +3611,395 @@ This software includes backoff under the following (MIT) license.
   var SAMPLE_COUNT_RAISE = 3;
   var SAMPLE_INTERVAL = 1000;
   var WARNING_TIMEOUT = 5 * 1000;
+  /**
+   * @typedef {Object} RTCMonitor.ThresholdOptions
+   * @property {RTCMonitor.ThresholdOption} [audioInputLevel] - Rules to apply to sample.audioInputLevel
+   * @property {RTCMonitor.ThresholdOption} [audioOutputLevel] - Rules to apply to sample.audioOutputLevel
+   * @property {RTCMonitor.ThresholdOption} [packetsLostFraction] - Rules to apply to sample.packetsLostFraction
+   * @property {RTCMonitor.ThresholdOption} [jitter] - Rules to apply to sample.jitter
+   * @property {RTCMonitor.ThresholdOption} [rtt] - Rules to apply to sample.rtt
+   * @property {RTCMonitor.ThresholdOption} [mos] - Rules to apply to sample.mos
+   */ /**
+  * @typedef {Object} RTCMonitor.ThresholdOption
+  * @property {?Number} [min] - Warning will be raised if tracked metric falls below this value.
+  * @property {?Number} [max] - Warning will be raised if tracked metric rises above this value.
+  * @property {?Number} [maxDuration] - Warning will be raised if tracked metric stays constant for
+  *   the specified number of consequent samples.
+  */
   var DEFAULT_THRESHOLDS = {
-      bytesReceived: { clearCount: 2, min: 1, raiseCount: 3, sampleCount: 3 },
-      bytesSent: { clearCount: 2, min: 1, raiseCount: 3, sampleCount: 3 },
-      jitter: { max: 30 },
-      mos: { min: 3 },
+      audioInputLevel: { maxDuration: 10 },
+      audioOutputLevel: { maxDuration: 10 },
       packetsLostFraction: { max: 1 },
+      jitter: { max: 30 },
       rtt: { max: 400 },
+      mos: { min: 3 }
   };
   /**
-   * Count the number of values that cross the max threshold.
-   * @private
-   * @param max - The max allowable value.
-   * @param values - The values to iterate over.
-   * @returns The amount of values in which the stat crossed the threshold.
-   */
-  function countHigh(max, values) {
-      return values.reduce(function (highCount, value) { return highCount += (value > max) ? 1 : 0; }, 0);
+   * RTCMonitor polls a peerConnection via PeerConnection.getStats
+   * and emits warnings when stats cross the specified threshold values.
+   * @constructor
+   * @param {RTCMonitor.Options} [options] - Config options for RTCMonitor.
+   */ /**
+  * @typedef {Object} RTCMonitor.Options
+  * @property {PeerConnection} [peerConnection] - The PeerConnection to monitor.
+  * @property {RTCMonitor.ThresholdOptions} [thresholds] - Optional custom threshold values.
+  */
+  function RTCMonitor(options) {
+      if (!(this instanceof RTCMonitor)) {
+          return new RTCMonitor(options);
+      }
+      options = options || {};
+      var thresholds = Object.assign({}, DEFAULT_THRESHOLDS, options.thresholds);
+      Object.defineProperties(this, {
+          _activeWarnings: { value: new Map() },
+          _currentStreaks: { value: new Map() },
+          _peerConnection: { value: options.peerConnection, writable: true },
+          _sampleBuffer: { value: [] },
+          _sampleInterval: { value: null, writable: true },
+          _thresholds: { value: thresholds },
+          _warningsEnabled: { value: true, writable: true }
+      });
+      if (options.peerConnection) {
+          this.enable();
+      }
+      EventEmitter.call(this);
   }
+  inherits(RTCMonitor, EventEmitter);
+  /**
+   * Create a sample object from a stats object using the previous sample,
+   *   if available.
+   * @param {Object} stats - Stats retrieved from getStatistics
+   * @param {?Object} [previousSample=null] - The previous sample to use to calculate deltas.
+   * @returns {Promise<RTCSample>}
+   */
+  RTCMonitor.createSample = function createSample(stats, previousSample) {
+      var previousPacketsSent = previousSample && previousSample.totals.packetsSent || 0;
+      var previousPacketsReceived = previousSample && previousSample.totals.packetsReceived || 0;
+      var previousPacketsLost = previousSample && previousSample.totals.packetsLost || 0;
+      var currentPacketsSent = stats.packetsSent - previousPacketsSent;
+      var currentPacketsReceived = stats.packetsReceived - previousPacketsReceived;
+      var currentPacketsLost = stats.packetsLost - previousPacketsLost;
+      var currentInboundPackets = currentPacketsReceived + currentPacketsLost;
+      var currentPacketsLostFraction = (currentInboundPackets > 0) ?
+          (currentPacketsLost / currentInboundPackets) * 100 : 0;
+      var totalInboundPackets = stats.packetsReceived + stats.packetsLost;
+      var totalPacketsLostFraction = (totalInboundPackets > 0) ?
+          (stats.packetsLost / totalInboundPackets) * 100 : 100;
+      return {
+          timestamp: stats.timestamp,
+          totals: {
+              packetsReceived: stats.packetsReceived,
+              packetsLost: stats.packetsLost,
+              packetsSent: stats.packetsSent,
+              packetsLostFraction: totalPacketsLostFraction,
+              bytesReceived: stats.bytesReceived,
+              bytesSent: stats.bytesSent
+          },
+          packetsSent: currentPacketsSent,
+          packetsReceived: currentPacketsReceived,
+          packetsLost: currentPacketsLost,
+          packetsLostFraction: currentPacketsLostFraction,
+          audioInputLevel: stats.audioInputLevel,
+          audioOutputLevel: stats.audioOutputLevel,
+          jitter: stats.jitter,
+          rtt: stats.rtt,
+          mos: Mos.calculate(stats, previousSample && currentPacketsLostFraction)
+      };
+  };
+  /**
+   * Start sampling RTC statistics for this {@link RTCMonitor}.
+   * @param {PeerConnection} [peerConnection] - A PeerConnection to monitor.
+   * @throws {Error} Attempted to replace an existing PeerConnection in RTCMonitor.enable
+   * @throws {Error} Can not enable RTCMonitor without a PeerConnection
+   * @returns {RTCMonitor} This RTCMonitor instance.
+   */
+  RTCMonitor.prototype.enable = function enable(peerConnection) {
+      if (peerConnection) {
+          if (this._peerConnection && peerConnection !== this._peerConnection) {
+              throw new Error('Attempted to replace an existing PeerConnection in RTCMonitor.enable');
+          }
+          this._peerConnection = peerConnection;
+      }
+      if (!this._peerConnection) {
+          throw new Error('Can not enable RTCMonitor without a PeerConnection');
+      }
+      this._sampleInterval = this._sampleInterval ||
+          setInterval(this._fetchSample.bind(this), SAMPLE_INTERVAL);
+      return this;
+  };
+  /**
+   * Stop sampling RTC statistics for this {@link RTCMonitor}.
+   * @returns {RTCMonitor} This RTCMonitor instance.
+   */
+  RTCMonitor.prototype.disable = function disable() {
+      clearInterval(this._sampleInterval);
+      this._sampleInterval = null;
+      return this;
+  };
+  /**
+   * Get stats from the PeerConnection.
+   * @returns {Promise<RTCSample>} A universally-formatted version of RTC stats.
+   */
+  RTCMonitor.prototype.getSample = function getSample() {
+      var pc = this._peerConnection;
+      var self = this;
+      return getStatistics(pc).then(function (stats) {
+          var previousSample = self._sampleBuffer.length &&
+              self._sampleBuffer[self._sampleBuffer.length - 1];
+          return RTCMonitor.createSample(stats, previousSample);
+      });
+  };
+  /**
+   * Get stats from the PeerConnection and add it to our list of samples.
+   * @private
+   * @returns {Promise<Object>} A universally-formatted version of RTC stats.
+   */
+  RTCMonitor.prototype._fetchSample = function _fetchSample() {
+      var self = this;
+      return this.getSample().then(function addSample(sample) {
+          self._addSample(sample);
+          self._raiseWarnings();
+          self.emit('sample', sample);
+          return sample;
+      }, function getSampleFailed(error) {
+          self.disable();
+          self.emit('error', error);
+      });
+  };
+  /**
+   * Add a sample to our sample buffer and remove the oldest if
+   *   we are over the limit.
+   * @private
+   * @param {Object} sample - Sample to add
+   */
+  RTCMonitor.prototype._addSample = function _addSample(sample) {
+      var samples = this._sampleBuffer;
+      samples.push(sample);
+      // We store 1 extra sample so that we always have (current, previous)
+      // available for all {sampleBufferSize} threshold validations.
+      if (samples.length > SAMPLE_COUNT_METRICS) {
+          samples.splice(0, samples.length - SAMPLE_COUNT_METRICS);
+      }
+  };
+  /**
+   * Apply our thresholds to our array of RTCStat samples.
+   * @private
+   */
+  RTCMonitor.prototype._raiseWarnings = function _raiseWarnings() {
+      if (!this._warningsEnabled) {
+          return;
+      }
+      for (var name_1 in this._thresholds) {
+          this._raiseWarningsForStat(name_1);
+      }
+  };
+  /**
+   * Enable warning functionality.
+   * @returns {RTCMonitor}
+   */
+  RTCMonitor.prototype.enableWarnings = function enableWarnings() {
+      this._warningsEnabled = true;
+      return this;
+  };
+  /**
+   * Disable warning functionality.
+   * @returns {RTCMonitor}
+   */
+  RTCMonitor.prototype.disableWarnings = function disableWarnings() {
+      if (this._warningsEnabled) {
+          this._activeWarnings.clear();
+      }
+      this._warningsEnabled = false;
+      return this;
+  };
+  /**
+   * Apply thresholds for a given stat name to our array of
+   *   RTCStat samples and raise or clear any associated warnings.
+   * @private
+   * @param {String} statName - Name of the stat to compare.
+   */
+  RTCMonitor.prototype._raiseWarningsForStat = function _raiseWarningsForStat(statName) {
+      var samples = this._sampleBuffer;
+      var limits = this._thresholds[statName];
+      var relevantSamples = samples.slice(-SAMPLE_COUNT_METRICS);
+      var values = relevantSamples.map(function (sample) { return sample[statName]; });
+      // (rrowland) If we have a bad or missing value in the set, we don't
+      // have enough information to throw or clear a warning. Bail out.
+      var containsNull = values.some(function (value) { return typeof value === 'undefined' || value === null; });
+      if (containsNull) {
+          return;
+      }
+      var count;
+      if (typeof limits.max === 'number') {
+          count = countHigh(limits.max, values);
+          if (count >= SAMPLE_COUNT_RAISE) {
+              this._raiseWarning(statName, 'max', { values: values });
+          }
+          else if (count <= SAMPLE_COUNT_CLEAR) {
+              this._clearWarning(statName, 'max', { values: values });
+          }
+      }
+      if (typeof limits.min === 'number') {
+          count = countLow(limits.min, values);
+          if (count >= SAMPLE_COUNT_RAISE) {
+              this._raiseWarning(statName, 'min', { values: values });
+          }
+          else if (count <= SAMPLE_COUNT_CLEAR) {
+              this._clearWarning(statName, 'min', { values: values });
+          }
+      }
+      if (typeof limits.maxDuration === 'number' && samples.length > 1) {
+          relevantSamples = samples.slice(-2);
+          var prevValue = relevantSamples[0][statName];
+          var curValue = relevantSamples[1][statName];
+          var prevStreak = this._currentStreaks.get(statName) || 0;
+          var streak = (prevValue === curValue) ? prevStreak + 1 : 0;
+          this._currentStreaks.set(statName, streak);
+          if (streak >= limits.maxDuration) {
+              this._raiseWarning(statName, 'maxDuration', { value: streak });
+          }
+          else if (streak === 0) {
+              this._clearWarning(statName, 'maxDuration', { value: prevStreak });
+          }
+      }
+  };
   /**
    * Count the number of values that cross the min threshold.
    * @private
-   * @param min - The minimum allowable value.
-   * @param values - The values to iterate over.
-   * @returns The amount of values in which the stat crossed the threshold.
+   * @param {Number} min - The minimum allowable value.
+   * @param {Array<Number>} values - The values to iterate over.
+   * @returns {Number} The amount of values in which the stat
+   *   crossed the threshold.
    */
   function countLow(min, values) {
+      // eslint-disable-next-line no-return-assign
       return values.reduce(function (lowCount, value) { return lowCount += (value < min) ? 1 : 0; }, 0);
   }
   /**
-   * {@link RTCMonitor} polls a peerConnection via PeerConnection.getStats
-   * and emits warnings when stats cross the specified threshold values.
+   * Count the number of values that cross the max threshold.
+   * @private
+   * @param {Number} max - The max allowable value.
+   * @param {Array<Number>} values - The values to iterate over.
+   * @returns {Number} The amount of values in which the stat
+   *   crossed the threshold.
    */
-  var RTCMonitor = /** @class */ (function (_super) {
-      __extends(RTCMonitor, _super);
-      /**
-       * @constructor
-       * @param [options] - Optional settings
-       */
-      function RTCMonitor(options) {
-          var _this = _super.call(this) || this;
-          /**
-           * A map of warnings with their raised time
-           */
-          _this._activeWarnings = new Map();
-          /**
-           * A map of stats with the number of exceeded thresholds
-           */
-          _this._currentStreaks = new Map();
-          /**
-           * Sample buffer. Saves most recent samples
-           */
-          _this._sampleBuffer = [];
-          /**
-           * Whether warnings should be enabled
-           */
-          _this._warningsEnabled = true;
-          options = options || {};
-          _this._getRTCStats = options.getRTCStats || getRTCStats;
-          _this._mos = options.Mos || Mos;
-          _this._peerConnection = options.peerConnection;
-          _this._thresholds = __assign({}, DEFAULT_THRESHOLDS, options.thresholds);
-          var thresholdSampleCounts = Object.values(_this._thresholds)
-              .map(function (threshold) { return threshold.sampleCount; })
-              .filter(function (sampleCount) { return !!sampleCount; });
-          _this._maxSampleCount = Math.max.apply(Math, [SAMPLE_COUNT_METRICS].concat(thresholdSampleCounts));
-          if (_this._peerConnection) {
-              _this.enable(_this._peerConnection);
-          }
-          return _this;
+  function countHigh(max, values) {
+      // eslint-disable-next-line no-return-assign
+      return values.reduce(function (highCount, value) { return highCount += (value > max) ? 1 : 0; }, 0);
+  }
+  /**
+   * Clear an active warning.
+   * @param {String} statName - The name of the stat to clear.
+   * @param {String} thresholdName - The name of the threshold to clear
+   * @param {?Object} [data] - Any relevant sample data.
+   * @private
+   */
+  RTCMonitor.prototype._clearWarning = function _clearWarning(statName, thresholdName, data) {
+      var warningId = statName + ":" + thresholdName;
+      var activeWarning = this._activeWarnings.get(warningId);
+      if (!activeWarning || Date.now() - activeWarning.timeRaised < WARNING_TIMEOUT) {
+          return;
       }
-      /**
-       * Stop sampling RTC statistics for this {@link RTCMonitor}.
-       * @returns The current {@link RTCMonitor}.
-       */
-      RTCMonitor.prototype.disable = function () {
-          clearInterval(this._sampleInterval);
-          delete this._sampleInterval;
-          return this;
-      };
-      /**
-       * Disable warnings for this {@link RTCMonitor}.
-       * @returns The current {@link RTCMonitor}.
-       */
-      RTCMonitor.prototype.disableWarnings = function () {
-          if (this._warningsEnabled) {
-              this._activeWarnings.clear();
+      this._activeWarnings.delete(warningId);
+      this.emit('warning-cleared', Object.assign({
+          name: statName,
+          threshold: {
+              name: thresholdName,
+              value: this._thresholds[statName][thresholdName]
           }
-          this._warningsEnabled = false;
-          return this;
-      };
-      /**
-       * Start sampling RTC statistics for this {@link RTCMonitor}.
-       * @param peerConnection - A PeerConnection to monitor.
-       * @returns The current {@link RTCMonitor}.
-       */
-      RTCMonitor.prototype.enable = function (peerConnection) {
-          if (peerConnection) {
-              if (this._peerConnection && peerConnection !== this._peerConnection) {
-                  throw new Error('Attempted to replace an existing PeerConnection in RTCMonitor.enable');
-              }
-              this._peerConnection = peerConnection;
-          }
-          if (!this._peerConnection) {
-              throw new Error('Can not enable RTCMonitor without a PeerConnection');
-          }
-          this._sampleInterval = this._sampleInterval ||
-              setInterval(this._fetchSample.bind(this), SAMPLE_INTERVAL);
-          return this;
-      };
-      /**
-       * Enable warnings for this {@link RTCMonitor}.
-       * @returns The current {@link RTCMonitor}.
-       */
-      RTCMonitor.prototype.enableWarnings = function () {
-          this._warningsEnabled = true;
-          return this;
-      };
-      /**
-       * Add a sample to our sample buffer and remove the oldest if we are over the limit.
-       * @param sample - Sample to add
-       */
-      RTCMonitor.prototype._addSample = function (sample) {
-          var samples = this._sampleBuffer;
-          samples.push(sample);
-          // We store 1 extra sample so that we always have (current, previous)
-          // available for all {sampleBufferSize} threshold validations.
-          if (samples.length > this._maxSampleCount) {
-              samples.splice(0, samples.length - this._maxSampleCount);
-          }
-      };
-      /**
-       * Clear an active warning.
-       * @param statName - The name of the stat to clear.
-       * @param thresholdName - The name of the threshold to clear
-       * @param [data] - Any relevant sample data.
-       */
-      RTCMonitor.prototype._clearWarning = function (statName, thresholdName, data) {
-          var warningId = statName + ":" + thresholdName;
-          var activeWarning = this._activeWarnings.get(warningId);
-          if (!activeWarning || Date.now() - activeWarning.timeRaised < WARNING_TIMEOUT) {
-              return;
-          }
-          this._activeWarnings.delete(warningId);
-          this.emit('warning-cleared', __assign({}, data, { name: statName, threshold: {
-                  name: thresholdName,
-                  value: this._thresholds[statName][thresholdName],
-              } }));
-      };
-      /**
-       * Create a sample object from a stats object using the previous sample, if available.
-       * @param stats - Stats retrieved from getStatistics
-       * @param [previousSample=null] - The previous sample to use to calculate deltas.
-       * @returns A universally-formatted version of RTC stats.
-       */
-      RTCMonitor.prototype._createSample = function (stats, previousSample) {
-          var previousBytesSent = previousSample && previousSample.totals.bytesSent || 0;
-          var previousBytesReceived = previousSample && previousSample.totals.bytesReceived || 0;
-          var previousPacketsSent = previousSample && previousSample.totals.packetsSent || 0;
-          var previousPacketsReceived = previousSample && previousSample.totals.packetsReceived || 0;
-          var previousPacketsLost = previousSample && previousSample.totals.packetsLost || 0;
-          var currentBytesSent = stats.bytesSent - previousBytesSent;
-          var currentBytesReceived = stats.bytesReceived - previousBytesReceived;
-          var currentPacketsSent = stats.packetsSent - previousPacketsSent;
-          var currentPacketsReceived = stats.packetsReceived - previousPacketsReceived;
-          var currentPacketsLost = stats.packetsLost - previousPacketsLost;
-          var currentInboundPackets = currentPacketsReceived + currentPacketsLost;
-          var currentPacketsLostFraction = (currentInboundPackets > 0) ?
-              (currentPacketsLost / currentInboundPackets) * 100 : 0;
-          var totalInboundPackets = stats.packetsReceived + stats.packetsLost;
-          var totalPacketsLostFraction = (totalInboundPackets > 0) ?
-              (stats.packetsLost / totalInboundPackets) * 100 : 100;
-          var rttValue = (typeof stats.rtt === 'number' || !previousSample) ? stats.rtt : previousSample.rtt;
-          return {
-              bytesReceived: currentBytesReceived,
-              bytesSent: currentBytesSent,
-              codecName: stats.codecName,
-              jitter: stats.jitter,
-              mos: this._mos.calculate(rttValue, stats.jitter, previousSample && currentPacketsLostFraction),
-              packetsLost: currentPacketsLost,
-              packetsLostFraction: currentPacketsLostFraction,
-              packetsReceived: currentPacketsReceived,
-              packetsSent: currentPacketsSent,
-              rtt: rttValue,
-              timestamp: stats.timestamp,
-              totals: {
-                  bytesReceived: stats.bytesReceived,
-                  bytesSent: stats.bytesSent,
-                  packetsLost: stats.packetsLost,
-                  packetsLostFraction: totalPacketsLostFraction,
-                  packetsReceived: stats.packetsReceived,
-                  packetsSent: stats.packetsSent,
-              },
-          };
-      };
-      /**
-       * Get stats from the PeerConnection and add it to our list of samples.
-       */
-      RTCMonitor.prototype._fetchSample = function () {
-          var _this = this;
-          this._getSample().then(function (sample) {
-              _this._addSample(sample);
-              _this._raiseWarnings();
-              _this.emit('sample', sample);
-          }).catch(function (error) {
-              _this.disable();
-              _this.emit('error', error);
-          });
-      };
-      /**
-       * Get stats from the PeerConnection.
-       * @returns A universally-formatted version of RTC stats.
-       */
-      RTCMonitor.prototype._getSample = function () {
-          var _this = this;
-          return this._getRTCStats(this._peerConnection).then(function (stats) {
-              var previousSample = null;
-              if (_this._sampleBuffer.length) {
-                  previousSample = _this._sampleBuffer[_this._sampleBuffer.length - 1];
-              }
-              return _this._createSample(stats, previousSample);
-          });
-      };
-      /**
-       * Raise a warning and log its raised time.
-       * @param statName - The name of the stat to raise.
-       * @param thresholdName - The name of the threshold to raise
-       * @param [data] - Any relevant sample data.
-       */
-      RTCMonitor.prototype._raiseWarning = function (statName, thresholdName, data) {
-          var warningId = statName + ":" + thresholdName;
-          if (this._activeWarnings.has(warningId)) {
-              return;
-          }
-          this._activeWarnings.set(warningId, { timeRaised: Date.now() });
-          this.emit('warning', __assign({}, data, { name: statName, threshold: {
-                  name: thresholdName,
-                  value: this._thresholds[statName][thresholdName],
-              } }));
-      };
-      /**
-       * Apply our thresholds to our array of RTCStat samples.
-       */
-      RTCMonitor.prototype._raiseWarnings = function () {
-          var _this = this;
-          if (!this._warningsEnabled) {
-              return;
-          }
-          Object.keys(this._thresholds).forEach(function (name) { return _this._raiseWarningsForStat(name); });
-      };
-      /**
-       * Apply thresholds for a given stat name to our array of
-       * RTCStat samples and raise or clear any associated warnings.
-       * @param statName - Name of the stat to compare.
-       */
-      RTCMonitor.prototype._raiseWarningsForStat = function (statName) {
-          var samples = this._sampleBuffer;
-          var limits = this._thresholds[statName];
-          var clearCount = limits.clearCount || SAMPLE_COUNT_CLEAR;
-          var raiseCount = limits.raiseCount || SAMPLE_COUNT_RAISE;
-          var sampleCount = limits.sampleCount || this._maxSampleCount;
-          var relevantSamples = samples.slice(-sampleCount);
-          var values = relevantSamples.map(function (sample) { return sample[statName]; });
-          // (rrowland) If we have a bad or missing value in the set, we don't
-          // have enough information to throw or clear a warning. Bail out.
-          var containsNull = values.some(function (value) { return typeof value === 'undefined' || value === null; });
-          if (containsNull) {
-              return;
-          }
-          var count;
-          if (typeof limits.max === 'number') {
-              count = countHigh(limits.max, values);
-              if (count >= raiseCount) {
-                  this._raiseWarning(statName, 'max', { values: values, samples: relevantSamples });
-              }
-              else if (count <= clearCount) {
-                  this._clearWarning(statName, 'max', { values: values, samples: relevantSamples });
-              }
-          }
-          if (typeof limits.min === 'number') {
-              count = countLow(limits.min, values);
-              if (count >= raiseCount) {
-                  this._raiseWarning(statName, 'min', { values: values, samples: relevantSamples });
-              }
-              else if (count <= clearCount) {
-                  this._clearWarning(statName, 'min', { values: values, samples: relevantSamples });
-              }
-          }
-          if (typeof limits.maxDuration === 'number' && samples.length > 1) {
-              relevantSamples = samples.slice(-2);
-              var prevValue = relevantSamples[0][statName];
-              var curValue = relevantSamples[1][statName];
-              var prevStreak = this._currentStreaks.get(statName) || 0;
-              var streak = (prevValue === curValue) ? prevStreak + 1 : 0;
-              this._currentStreaks.set(statName, streak);
-              if (streak >= limits.maxDuration) {
-                  this._raiseWarning(statName, 'maxDuration', { value: streak });
-              }
-              else if (streak === 0) {
-                  this._clearWarning(statName, 'maxDuration', { value: prevStreak });
-              }
-          }
-      };
-      return RTCMonitor;
-  }(events_1.EventEmitter));
-  exports.default = RTCMonitor;
-  
-  },{"./mos":19,"./stats":23,"events":42}],19:[function(require,module,exports){
-  'use strict';
-  
-  var rfactorConstants = {
-    r0: 94.768,
-    is: 1.42611
+      }, data));
   };
+  /**
+   * Raise a warning and log its raised time.
+   * @param {String} statName - The name of the stat to raise.
+   * @param {String} thresholdName - The name of the threshold to raise
+   * @param {?Object} [data] - Any relevant sample data.
+   * @private
+   */
+  RTCMonitor.prototype._raiseWarning = function _raiseWarning(statName, thresholdName, data) {
+      var warningId = statName + ":" + thresholdName;
+      if (this._activeWarnings.has(warningId)) {
+          return;
+      }
+      this._activeWarnings.set(warningId, { timeRaised: Date.now() });
+      this.emit('warning', Object.assign({
+          name: statName,
+          threshold: {
+              name: thresholdName,
+              value: this._thresholds[statName][thresholdName]
+          }
+      }, data));
+  };
+  module.exports = RTCMonitor;
   
+  },{"./mos":18,"./stats":21,"events":40,"util":51}],18:[function(require,module,exports){
+  var rfactorConstants = {
+      r0: 94.768,
+      is: 1.42611
+  };
   /**
    * Calculate the mos score of a stats object
-   * @param {number} rtt
-   * @param {number} jitter
+   * @param {object} sample - Sample, must have rtt and jitter
    * @param {number} fractionLost - The fraction of packets that have been lost
        Calculated by packetsLost / totalPackets
    * @return {number} mos - Calculated MOS, 1.0 through roughly 4.5
    */
-  function calcMos(rtt, jitter, fractionLost) {
-    if (!isPositiveNumber(rtt) || !isPositiveNumber(jitter) || !isPositiveNumber(fractionLost)) {
-      return null;
-    }
-  
-    var rFactor = calculateRFactor(rtt, jitter, fractionLost);
-  
-    var mos = 1 + 0.035 * rFactor + 0.000007 * rFactor * (rFactor - 60) * (100 - rFactor);
-  
-    // Make sure MOS is in range
-    var isValid = mos >= 1.0 && mos < 4.6;
-    return isValid ? mos : null;
+  function calcMos(sample, fractionLost) {
+      if (!sample ||
+          !isPositiveNumber(sample.rtt) ||
+          !isPositiveNumber(sample.jitter) ||
+          !isPositiveNumber(fractionLost)) {
+          return null;
+      }
+      var rFactor = calculateRFactor(sample.rtt, sample.jitter, fractionLost);
+      var mos = 1 + (0.035 * rFactor) + (0.000007 * rFactor) *
+          (rFactor - 60) * (100 - rFactor);
+      // Make sure MOS is in range
+      var isValid = (mos >= 1.0 && mos < 4.6);
+      return isValid ? mos : null;
   }
-  
   function calculateRFactor(rtt, jitter, fractionLost) {
-    var effectiveLatency = rtt + jitter * 2 + 10;
-    var rFactor = 0;
-  
-    switch (true) {
-      case effectiveLatency < 160:
-        rFactor = rfactorConstants.r0 - effectiveLatency / 40;
-        break;
-      case effectiveLatency < 1000:
-        rFactor = rfactorConstants.r0 - (effectiveLatency - 120) / 10;
-        break;
-      case effectiveLatency >= 1000:
-        rFactor = rfactorConstants.r0 - effectiveLatency / 100;
-        break;
-    }
-  
-    var multiplier = .01;
-    switch (true) {
-      case fractionLost === -1:
-        multiplier = 0;
-        rFactor = 0;
-        break;
-      case fractionLost <= rFactor / 2.5:
-        multiplier = 2.5;
-        break;
-      case fractionLost > rFactor / 2.5 && fractionLost < 100:
-        multiplier = .25;
-        break;
-    }
-  
-    rFactor -= fractionLost * multiplier;
-    return rFactor;
+      var effectiveLatency = rtt + (jitter * 2) + 10;
+      var rFactor = 0;
+      switch (true) {
+          case effectiveLatency < 160:
+              rFactor = rfactorConstants.r0 - (effectiveLatency / 40);
+              break;
+          case effectiveLatency < 1000:
+              rFactor = rfactorConstants.r0 - ((effectiveLatency - 120) / 10);
+              break;
+          case effectiveLatency >= 1000:
+              rFactor = rfactorConstants.r0 - ((effectiveLatency) / 100);
+              break;
+      }
+      var multiplier = .01;
+      switch (true) {
+          case fractionLost === -1:
+              multiplier = 0;
+              rFactor = 0;
+              break;
+          case fractionLost <= (rFactor / 2.5):
+              multiplier = 2.5;
+              break;
+          case fractionLost > (rFactor / 2.5) && fractionLost < 100:
+              multiplier = .25;
+              break;
+      }
+      rFactor -= (fractionLost * multiplier);
+      return rFactor;
   }
-  
   function isPositiveNumber(n) {
-    return typeof n === 'number' && !isNaN(n) && isFinite(n) && n >= 0;
+      return typeof n === 'number' && !isNaN(n) && isFinite(n) && n >= 0;
   }
-  
   module.exports = {
-    calculate: calcMos
+      calculate: calcMos
   };
-  },{}],20:[function(require,module,exports){
-  'use strict';
   
+  },{}],19:[function(require,module,exports){
   var Log = require('../log');
   var util = require('../util');
   var RTCPC = require('./rtcpc');
-  
   var INITIAL_ICE_CONNECTION_STATE = 'new';
-  
   /**
    * @typedef {Object} PeerConnection
    * @param audioHelper
@@ -4550,70 +4009,62 @@ This software includes backoff under the following (MIT) license.
    * @constructor
    */
   function PeerConnection(audioHelper, pstream, getUserMedia, options) {
-    if (!audioHelper || !pstream || !getUserMedia) {
-      throw new Error('Audiohelper, pstream and getUserMedia are required arguments');
-    }
-  
-    if (!(this instanceof PeerConnection)) {
-      return new PeerConnection(audioHelper, pstream, getUserMedia, options);
-    }
-  
-    function noop() {}
-    this.onopen = noop;
-    this.onerror = noop;
-    this.onclose = noop;
-    this.ondisconnect = noop;
-    this.onreconnect = noop;
-    this.onsignalingstatechange = noop;
-    this.oniceconnectionstatechange = noop;
-    this.onicegatheringstatechange = noop;
-    this.onicecandidate = noop;
-    this.onvolume = noop;
-    this.version = null;
-    this.pstream = pstream;
-    this.stream = null;
-    this.sinkIds = new Set(['default']);
-    this.outputs = new Map();
-    this.status = 'connecting';
-    this.callSid = null;
-    this.isMuted = false;
-    this.getUserMedia = getUserMedia;
-  
-    var AudioContext = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
-    this._isSinkSupported = !!AudioContext && typeof HTMLAudioElement !== 'undefined' && HTMLAudioElement.prototype.setSinkId;
-    // NOTE(mmalavalli): Since each Connection creates its own AudioContext,
-    // after 6 instances an exception is thrown. Refer https://www.w3.org/2011/audio/track/issues/3.
-    // In order to get around it, we are re-using the Device's AudioContext.
-    this._audioContext = AudioContext && audioHelper._audioContext;
-    this._masterAudio = null;
-    this._masterAudioDeviceId = null;
-    this._mediaStreamSource = null;
-    this._dtmfSender = null;
-    this._dtmfSenderUnsupported = false;
-    this._callEvents = [];
-    this._nextTimeToPublish = Date.now();
-    this._onAnswerOrRinging = noop;
-    this._onHangup = noop;
-    this._remoteStream = null;
-    this._shouldManageStream = true;
-    Log.mixinLog(this, '[Twilio.PeerConnection]');
-    this.log.enabled = options.debug;
-    this.log.warnings = options.warnings;
-    this._iceState = INITIAL_ICE_CONNECTION_STATE;
-    this._isUnifiedPlan = options.isUnifiedPlan;
-  
-    this.options = options = options || {};
-    this.navigator = options.navigator || (typeof navigator !== 'undefined' ? navigator : null);
-    this.util = options.util || util;
-    this.codecPreferences = options.codecPreferences;
-  
-    return this;
+      if (!audioHelper || !pstream || !getUserMedia) {
+          throw new Error('Audiohelper, pstream and getUserMedia are required arguments');
+      }
+      if (!(this instanceof PeerConnection)) {
+          return new PeerConnection(audioHelper, pstream, getUserMedia, options);
+      }
+      function noop() { }
+      this.onopen = noop;
+      this.onerror = noop;
+      this.onclose = noop;
+      this.ondisconnect = noop;
+      this.onreconnect = noop;
+      this.onsignalingstatechange = noop;
+      this.oniceconnectionstatechange = noop;
+      this.onicecandidate = noop;
+      this.onvolume = noop;
+      this.version = null;
+      this.pstream = pstream;
+      this.stream = null;
+      this.sinkIds = new Set(['default']);
+      this.outputs = new Map();
+      this.status = 'connecting';
+      this.callSid = null;
+      this.isMuted = false;
+      this.getUserMedia = getUserMedia;
+      var AudioContext = typeof window !== 'undefined'
+          && (window.AudioContext || window.webkitAudioContext);
+      this._isSinkSupported = !!AudioContext &&
+          typeof HTMLAudioElement !== 'undefined' && HTMLAudioElement.prototype.setSinkId;
+      // NOTE(mmalavalli): Since each Connection creates its own AudioContext,
+      // after 6 instances an exception is thrown. Refer https://www.w3.org/2011/audio/track/issues/3.
+      // In order to get around it, we are re-using the Device's AudioContext.
+      this._audioContext = AudioContext && audioHelper._audioContext;
+      this._masterAudio = null;
+      this._masterAudioDeviceId = null;
+      this._mediaStreamSource = null;
+      this._dtmfSender = null;
+      this._dtmfSenderUnsupported = false;
+      this._callEvents = [];
+      this._nextTimeToPublish = Date.now();
+      this._onAnswerOrRinging = noop;
+      this._remoteStream = null;
+      this._shouldManageStream = true;
+      Log.mixinLog(this, '[Twilio.PeerConnection]');
+      this.log.enabled = options.debug;
+      this.log.warnings = options.warnings;
+      this._iceState = INITIAL_ICE_CONNECTION_STATE;
+      this.options = options = options || {};
+      this.navigator = options.navigator
+          || (typeof navigator !== 'undefined' ? navigator : null);
+      this.util = options.util || util;
+      return this;
   }
-  
   PeerConnection.prototype.uri = function () {
-    return this._uri;
+      return this._uri;
   };
-  
   /**
    * Open the underlying RTCPeerConnection with a MediaStream obtained by
    *   passed constraints. The resulting MediaStream is created internally
@@ -4621,9 +4072,9 @@ This software includes backoff under the following (MIT) license.
    * @param {MediaStreamConstraints} constraints
    */
   PeerConnection.prototype.openWithConstraints = function (constraints) {
-    return this.getUserMedia({ audio: constraints }).then(this._setInputTracksFromStream.bind(this, false));
+      return this.getUserMedia({ audio: constraints })
+          .then(this._setInputTracksFromStream.bind(this, false));
   };
-  
   /**
    * Replace the existing input audio tracks with the audio tracks from the
    *   passed input audio stream. We re-use the existing stream because
@@ -4631,136 +4082,70 @@ This software includes backoff under the following (MIT) license.
    * @param {MediaStream} stream
    */
   PeerConnection.prototype.setInputTracksFromStream = function (stream) {
-    var self = this;
-    return this._setInputTracksFromStream(true, stream).then(function () {
-      self._shouldManageStream = false;
-    });
+      var self = this;
+      return this._setInputTracksFromStream(true, stream).then(function () {
+          self._shouldManageStream = false;
+      });
   };
-  
-  PeerConnection.prototype._createAnalyser = function (audioContext, options) {
-    options = Object.assign({
-      fftSize: 32,
-      smoothingTimeConstant: 0.3
-    }, options);
-  
-    var analyser = audioContext.createAnalyser();
-    for (var field in options) {
-      analyser[field] = options[field];
-    }
-  
-    return analyser;
+  PeerConnection.prototype._createAnalyser = function (stream, audioContext) {
+      var analyser = audioContext.createAnalyser();
+      analyser.fftSize = 32;
+      analyser.smoothingTimeConstant = 0.3;
+      var streamSource = audioContext.createMediaStreamSource(stream);
+      streamSource.connect(analyser);
+      return analyser;
   };
-  
   PeerConnection.prototype._setVolumeHandler = function (handler) {
-    this.onvolume = handler;
+      this.onvolume = handler;
   };
   PeerConnection.prototype._startPollingVolume = function () {
-    if (!this._audioContext || !this.stream || !this._remoteStream) {
-      return;
-    }
-  
-    var audioContext = this._audioContext;
-  
-    var inputAnalyser = this._inputAnalyser = this._createAnalyser(audioContext);
-    var inputBufferLength = inputAnalyser.frequencyBinCount;
-    var inputDataArray = new Uint8Array(inputBufferLength);
-    this._inputAnalyser2 = this._createAnalyser(audioContext, {
-      minDecibels: -127,
-      maxDecibels: 0,
-      smoothingTimeConstant: 0
-    });
-  
-    var outputAnalyser = this._outputAnalyser = this._createAnalyser(audioContext);
-    var outputBufferLength = outputAnalyser.frequencyBinCount;
-    var outputDataArray = new Uint8Array(outputBufferLength);
-    this._outputAnalyser2 = this._createAnalyser(audioContext, {
-      minDecibels: -127,
-      maxDecibels: 0,
-      smoothingTimeConstant: 0
-    });
-  
-    this._updateInputStreamSource(this.stream);
-    this._updateOutputStreamSource(this._remoteStream);
-  
-    var self = this;
-    requestAnimationFrame(function emitVolume() {
-      if (!self._audioContext) {
-        return;
-      } else if (self.status === 'closed') {
-        self._inputAnalyser.disconnect();
-        self._outputAnalyser.disconnect();
-        self._inputAnalyser2.disconnect();
-        self._outputAnalyser2.disconnect();
-        return;
+      if (!this._audioContext || !this.stream || !this._remoteStream) {
+          return;
       }
-  
-      self._inputAnalyser.getByteFrequencyData(inputDataArray);
-      var inputVolume = self.util.average(inputDataArray);
-  
-      self._inputAnalyser2.getByteFrequencyData(inputDataArray);
-      var inputVolume2 = self.util.average(inputDataArray);
-  
-      self._outputAnalyser.getByteFrequencyData(outputDataArray);
-      var outputVolume = self.util.average(outputDataArray);
-  
-      self._outputAnalyser2.getByteFrequencyData(outputDataArray);
-      var outputVolume2 = self.util.average(outputDataArray);
-      self.onvolume(inputVolume / 255, outputVolume / 255, inputVolume2, outputVolume2);
-  
-      requestAnimationFrame(emitVolume);
-    });
-  };
-  
-  PeerConnection.prototype._stopStream = function _stopStream(stream) {
-    // We shouldn't stop the tracks if they were not created inside
-    //   this PeerConnection.
-    if (!this._shouldManageStream) {
-      return;
-    }
-  
-    if (typeof MediaStreamTrack.prototype.stop === 'function') {
-      var audioTracks = typeof stream.getAudioTracks === 'function' ? stream.getAudioTracks() : stream.audioTracks;
-      audioTracks.forEach(function (track) {
-        track.stop();
+      var audioContext = this._audioContext;
+      var inputAnalyser = this._inputAnalyser = this._createAnalyser(this.stream, audioContext);
+      var inputBufferLength = inputAnalyser.frequencyBinCount;
+      var inputDataArray = new Uint8Array(inputBufferLength);
+      var outputAnalyser = this._outputAnalyser = this._createAnalyser(this._remoteStream, audioContext);
+      var outputBufferLength = outputAnalyser.frequencyBinCount;
+      var outputDataArray = new Uint8Array(outputBufferLength);
+      var self = this;
+      requestAnimationFrame(function emitVolume() {
+          if (!self._audioContext) {
+              return;
+          }
+          else if (self.status === 'closed') {
+              self._inputAnalyser.disconnect();
+              self._outputAnalyser.disconnect();
+              return;
+          }
+          self._inputAnalyser.getByteFrequencyData(inputDataArray);
+          var inputVolume = self.util.average(inputDataArray);
+          self._outputAnalyser.getByteFrequencyData(outputDataArray);
+          var outputVolume = self.util.average(outputDataArray);
+          self.onvolume(inputVolume / 255, outputVolume / 255);
+          requestAnimationFrame(emitVolume);
       });
-    }
-    // NOTE(mroberts): This is just a fallback to any ancient browsers that may
-    // not implement MediaStreamTrack.stop.
-    else {
-        stream.stop();
+  };
+  PeerConnection.prototype._stopStream = function _stopStream(stream) {
+      // We shouldn't stop the tracks if they were not created inside
+      //   this PeerConnection.
+      if (!this._shouldManageStream) {
+          return;
+      }
+      if (typeof MediaStreamTrack.prototype.stop === 'function') {
+          var audioTracks = typeof stream.getAudioTracks === 'function'
+              ? stream.getAudioTracks() : stream.audioTracks;
+          audioTracks.forEach(function (track) {
+              track.stop();
+          });
+      }
+      // NOTE(mroberts): This is just a fallback to any ancient browsers that may
+      // not implement MediaStreamTrack.stop.
+      else {
+          stream.stop();
       }
   };
-  
-  /**
-   * Update the stream source with the new input audio stream.
-   * @param {MediaStream} stream
-   * @private
-   */
-  PeerConnection.prototype._updateInputStreamSource = function (stream) {
-    if (this._inputStreamSource) {
-      this._inputStreamSource.disconnect();
-    }
-  
-    this._inputStreamSource = this._audioContext.createMediaStreamSource(stream);
-    this._inputStreamSource.connect(this._inputAnalyser);
-    this._inputStreamSource.connect(this._inputAnalyser2);
-  };
-  
-  /**
-   * Update the stream source with the new ouput audio stream.
-   * @param {MediaStream} stream
-   * @private
-   */
-  PeerConnection.prototype._updateOutputStreamSource = function (stream) {
-    if (this._outputStreamSource) {
-      this._outputStreamSource.disconnect();
-    }
-  
-    this._outputStreamSource = this._audioContext.createMediaStreamSource(stream);
-    this._outputStreamSource.connect(this._outputAnalyser);
-    this._outputStreamSource.connect(this._outputAnalyser2);
-  };
-  
   /**
    * Replace the tracks of the current stream with new tracks. We do this rather than replacing the
    *   whole stream because AnalyzerNodes are bound to a stream.
@@ -4773,216 +4158,112 @@ This software includes backoff under the following (MIT) license.
    * @private
    */
   PeerConnection.prototype._setInputTracksFromStream = function (shouldClone, newStream) {
-    return this._isUnifiedPlan ? this._setInputTracksForUnifiedPlan(shouldClone, newStream) : this._setInputTracksForPlanB(shouldClone, newStream);
-  };
-  
-  /**
-   * Replace the tracks of the current stream with new tracks using the 'plan-b' method.
-   * @param {Boolean} shouldClone - Whether the stream should be cloned if it is the first
-   *   stream, or set directly. As a rule of thumb, streams that are passed in externally may have
-   *   their lifecycle managed externally, and should be cloned so that we do not tear it or its tracks
-   *   down when the call ends. Streams that we create internally (inside PeerConnection) should be set
-   *   directly so that when the call ends it is disposed of.
-   * @param {MediaStream} newStream - The new stream to copy the tracks over from.
-   * @private
-   */
-  PeerConnection.prototype._setInputTracksForPlanB = function (shouldClone, newStream) {
-    var _this = this;
-  
-    if (!newStream) {
-      return Promise.reject(new Error('Can not set input stream to null while in a call'));
-    }
-  
-    if (!newStream.getAudioTracks().length) {
-      return Promise.reject(new Error('Supplied input stream has no audio tracks'));
-    }
-  
-    var localStream = this.stream;
-  
-    if (!localStream) {
-      // We can't use MediaStream.clone() here because it stopped copying over tracks
-      //   as of Chrome 61. https://bugs.chromium.org/p/chromium/issues/detail?id=770908
-      this.stream = shouldClone ? cloneStream(newStream) : newStream;
-    } else {
-      this._stopStream(localStream);
-  
-      removeStream(this.version.pc, localStream);
-      localStream.getAudioTracks().forEach(localStream.removeTrack, localStream);
-      newStream.getAudioTracks().forEach(localStream.addTrack, localStream);
-      addStream(this.version.pc, newStream);
-  
-      this._updateInputStreamSource(this.stream);
-    }
-  
-    // Apply mute settings to new input track
-    this.mute(this.isMuted);
-  
-    if (!this.version) {
-      return Promise.resolve(this.stream);
-    }
-  
-    return new Promise(function (resolve, reject) {
-      _this.version.createOffer(_this.codecPreferences, { audio: true }, function () {
-        _this.version.processAnswer(_this.codecPreferences, _this._answerSdp, function () {
-          resolve(_this.stream);
-        }, reject);
-      }, reject);
-    });
-  };
-  
-  /**
-   * Replace the tracks of the current stream with new tracks using the 'unified-plan' method.
-   * @param {Boolean} shouldClone - Whether the stream should be cloned if it is the first
-   *   stream, or set directly. As a rule of thumb, streams that are passed in externally may have
-   *   their lifecycle managed externally, and should be cloned so that we do not tear it or its tracks
-   *   down when the call ends. Streams that we create internally (inside PeerConnection) should be set
-   *   directly so that when the call ends it is disposed of.
-   * @param {MediaStream} newStream - The new stream to copy the tracks over from.
-   * @private
-   */
-  PeerConnection.prototype._setInputTracksForUnifiedPlan = function (shouldClone, newStream) {
-    var _this2 = this;
-  
-    if (!newStream) {
-      return Promise.reject(new Error('Can not set input stream to null while in a call'));
-    }
-  
-    if (!newStream.getAudioTracks().length) {
-      return Promise.reject(new Error('Supplied input stream has no audio tracks'));
-    }
-  
-    var localStream = this.stream;
-    var getStreamPromise = function getStreamPromise() {
+      var self = this;
+      if (!newStream) {
+          return Promise.reject(new Error('Can not set input stream to null while in a call'));
+      }
+      if (!newStream.getAudioTracks().length) {
+          return Promise.reject(new Error('Supplied input stream has no audio tracks'));
+      }
+      var localStream = this.stream;
+      if (!localStream) {
+          // We can't use MediaStream.clone() here because it stopped copying over tracks
+          //   as of Chrome 61. https://bugs.chromium.org/p/chromium/issues/detail?id=770908
+          this.stream = shouldClone ? cloneStream(newStream) : newStream;
+      }
+      else {
+          this._stopStream(localStream);
+          removeStream(this.version.pc, localStream);
+          localStream.getAudioTracks().forEach(localStream.removeTrack, localStream);
+          newStream.getAudioTracks().forEach(localStream.addTrack, localStream);
+          addStream(this.version.pc, newStream);
+      }
       // Apply mute settings to new input track
-      _this2.mute(_this2.isMuted);
-      return Promise.resolve(_this2.stream);
-    };
-  
-    if (!localStream) {
-      // We can't use MediaStream.clone() here because it stopped copying over tracks
-      //   as of Chrome 61. https://bugs.chromium.org/p/chromium/issues/detail?id=770908
-      this.stream = shouldClone ? cloneStream(newStream) : newStream;
-    } else {
-      // If the call was started with gUM, and we are now replacing that track with an
-      // external stream's tracks, we should stop the old managed track.
-      if (this._shouldManageStream) {
-        this._stopStream(localStream);
+      this.mute(this.isMuted);
+      if (!this.version) {
+          return Promise.resolve(this.stream);
       }
-  
-      if (!this._sender) {
-        this._sender = this.version.pc.getSenders()[0];
-      }
-  
-      return this._sender.replaceTrack(newStream.getAudioTracks()[0]).then(function () {
-        _this2._updateInputStreamSource(newStream);
-        return getStreamPromise();
+      return new Promise(function (resolve, reject) {
+          self.version.createOffer({ audio: true }, function onOfferSuccess() {
+              self.version.processAnswer(self._answerSdp, function () {
+                  if (self._audioContext) {
+                      self._inputAnalyser = self._createAnalyser(self.stream, self._audioContext);
+                  }
+                  resolve(self.stream);
+              }, reject);
+          }, reject);
       });
-    }
-  
-    return getStreamPromise();
   };
-  
   PeerConnection.prototype._onInputDevicesChanged = function () {
-    if (!this.stream) {
-      return;
-    }
-  
-    // If all of our active tracks are ended, then our active input was lost
-    var activeInputWasLost = this.stream.getAudioTracks().every(function (track) {
-      return track.readyState === 'ended';
-    });
-  
-    // We only want to act if we manage the stream in PeerConnection (It was created
-    // here, rather than passed in.)
-    if (activeInputWasLost && this._shouldManageStream) {
-      this.openWithConstraints(true);
-    }
+      if (!this.stream) {
+          return;
+      }
+      // If all of our active tracks are ended, then our active input was lost
+      var activeInputWasLost = this.stream.getAudioTracks().every(function (track) { return track.readyState === 'ended'; });
+      // We only want to act if we manage the stream in PeerConnection (It was created
+      // here, rather than passed in.)
+      if (activeInputWasLost && this._shouldManageStream) {
+          this.openWithConstraints(true);
+      }
   };
-  
   PeerConnection.prototype._setSinkIds = function (sinkIds) {
-    if (!this._isSinkSupported) {
-      return Promise.reject(new Error('Audio output selection is not supported by this browser'));
-    }
-  
-    this.sinkIds = new Set(sinkIds.forEach ? sinkIds : [sinkIds]);
-    return this.version ? this._updateAudioOutputs() : Promise.resolve();
+      if (!this._isSinkSupported) {
+          return Promise.reject(new Error('Audio output selection is not supported by this browser'));
+      }
+      this.sinkIds = new Set(sinkIds.forEach ? sinkIds : [sinkIds]);
+      return this.version
+          ? this._updateAudioOutputs()
+          : Promise.resolve();
   };
-  
   PeerConnection.prototype._updateAudioOutputs = function updateAudioOutputs() {
-    var addedOutputIds = Array.from(this.sinkIds).filter(function (id) {
-      return !this.outputs.has(id);
-    }, this);
-  
-    var removedOutputIds = Array.from(this.outputs.keys()).filter(function (id) {
-      return !this.sinkIds.has(id);
-    }, this);
-  
-    var self = this;
-    var createOutputPromises = addedOutputIds.map(this._createAudioOutput, this);
-    return Promise.all(createOutputPromises).then(function () {
-      return Promise.all(removedOutputIds.map(self._removeAudioOutput, self));
-    });
+      var addedOutputIds = Array.from(this.sinkIds).filter(function (id) {
+          return !this.outputs.has(id);
+      }, this);
+      var removedOutputIds = Array.from(this.outputs.keys()).filter(function (id) {
+          return !this.sinkIds.has(id);
+      }, this);
+      var self = this;
+      var createOutputPromises = addedOutputIds.map(this._createAudioOutput, this);
+      return Promise.all(createOutputPromises).then(function () { return Promise.all(removedOutputIds.map(self._removeAudioOutput, self)); });
   };
-  
   PeerConnection.prototype._createAudio = function createAudio(arr) {
-    return new Audio(arr);
+      return new Audio(arr);
   };
-  
   PeerConnection.prototype._createAudioOutput = function createAudioOutput(id) {
-    var dest = this._audioContext.createMediaStreamDestination();
-    this._mediaStreamSource.connect(dest);
-  
-    var audio = this._createAudio();
-    setAudioSource(audio, dest.stream);
-  
-    var self = this;
-    return audio.setSinkId(id).then(function () {
-      return audio.play();
-    }).then(function () {
-      self.outputs.set(id, {
-        audio: audio,
-        dest: dest
+      var dest = this._audioContext.createMediaStreamDestination();
+      this._mediaStreamSource.connect(dest);
+      var audio = this._createAudio();
+      setAudioSource(audio, dest.stream);
+      var self = this;
+      return audio.setSinkId(id).then(function () { return audio.play(); }).then(function () {
+          self.outputs.set(id, {
+              audio: audio,
+              dest: dest
+          });
       });
-    });
   };
-  
   PeerConnection.prototype._removeAudioOutputs = function removeAudioOutputs() {
-    if (this._masterAudio && typeof this._masterAudioDeviceId !== 'undefined') {
-      this._disableOutput(this, this._masterAudioDeviceId);
-      this.outputs.delete(this._masterAudioDeviceId);
-      this._masterAudioDeviceId = null;
-  
-      // Release the audio resources before deleting the audio
-      if (!this._masterAudio.paused) {
-        this._masterAudio.pause();
+      if (this._masterAudio && typeof this._masterAudioDeviceId !== 'undefined') {
+          this._disableOutput(this, this._masterAudioDeviceId);
+          this.outputs.delete(this._masterAudioDeviceId);
+          this._masterAudio = null;
+          this._masterAudioDeviceId = null;
       }
-      if (typeof this._masterAudio.srcObject !== 'undefined') {
-        this._masterAudio.srcObject = null;
-      } else {
-        this._masterAudio.src = '';
-      }
-      this._masterAudio = null;
-    }
-  
-    return Array.from(this.outputs.keys()).map(this._removeAudioOutput, this);
+      return Array.from(this.outputs.keys()).map(this._removeAudioOutput, this);
   };
-  
   PeerConnection.prototype._disableOutput = function disableOutput(pc, id) {
-    var output = pc.outputs.get(id);
-    if (!output) {
-      return;
-    }
-  
-    if (output.audio) {
-      output.audio.pause();
-      output.audio.src = '';
-    }
-  
-    if (output.dest) {
-      output.dest.disconnect();
-    }
+      var output = pc.outputs.get(id);
+      if (!output) {
+          return;
+      }
+      if (output.audio) {
+          output.audio.pause();
+          output.audio.src = '';
+      }
+      if (output.dest) {
+          output.dest.disconnect();
+      }
   };
-  
   /**
    * Disable a non-master output, and update the master output to assume its state. This
    *   is called when the device ID assigned to the master output has been removed from
@@ -4993,33 +4274,27 @@ This software includes backoff under the following (MIT) license.
    * @param {string} masterId - The current device ID assigned to the master audio element.
    */
   PeerConnection.prototype._reassignMasterOutput = function reassignMasterOutput(pc, masterId) {
-    var masterOutput = pc.outputs.get(masterId);
-    pc.outputs.delete(masterId);
-  
-    var self = this;
-    var idToReplace = Array.from(pc.outputs.keys())[0] || 'default';
-    return masterOutput.audio.setSinkId(idToReplace).then(function () {
-      self._disableOutput(pc, idToReplace);
-  
-      pc.outputs.set(idToReplace, masterOutput);
-      pc._masterAudioDeviceId = idToReplace;
-    }).catch(function rollback() {
-      pc.outputs.set(masterId, masterOutput);
-      self.log('Could not reassign master output. Attempted to roll back.');
-    });
+      var masterOutput = pc.outputs.get(masterId);
+      pc.outputs.delete(masterId);
+      var self = this;
+      var idToReplace = Array.from(pc.outputs.keys())[0] || 'default';
+      return masterOutput.audio.setSinkId(idToReplace).then(function () {
+          self._disableOutput(pc, idToReplace);
+          pc.outputs.set(idToReplace, masterOutput);
+          pc._masterAudioDeviceId = idToReplace;
+      }).catch(function rollback(reason) {
+          pc.outputs.set(masterId, masterOutput);
+          throw reason;
+      });
   };
-  
   PeerConnection.prototype._removeAudioOutput = function removeAudioOutput(id) {
-    if (this._masterAudioDeviceId === id) {
-      return this._reassignMasterOutput(this, id);
-    }
-  
-    this._disableOutput(this, id);
-    this.outputs.delete(id);
-  
-    return Promise.resolve();
+      if (this._masterAudioDeviceId === id) {
+          return this._reassignMasterOutput(this, id);
+      }
+      this._disableOutput(this, id);
+      this.outputs.delete(id);
+      return Promise.resolve();
   };
-  
   /**
    * Use an AudioContext to potentially split our audio output stream to multiple
    *   audio devices. This is only available to browsers with AudioContext and
@@ -5028,368 +4303,238 @@ This software includes backoff under the following (MIT) license.
    *   track of its ID because we must replace it if we lose its initial device.
    */
   PeerConnection.prototype._onAddTrack = function onAddTrack(pc, stream) {
-    var audio = pc._masterAudio = this._createAudio();
-    setAudioSource(audio, stream);
-    audio.play();
-  
-    // Assign the initial master audio element to a random active output device
-    var deviceId = Array.from(pc.outputs.keys())[0] || 'default';
-    pc._masterAudioDeviceId = deviceId;
-    pc.outputs.set(deviceId, {
-      audio: audio
-    });
-  
-    pc._mediaStreamSource = pc._audioContext.createMediaStreamSource(stream);
-  
-    pc.pcStream = stream;
-    pc._updateAudioOutputs();
+      var audio = pc._masterAudio = this._createAudio();
+      setAudioSource(audio, stream);
+      audio.play();
+      // Assign the initial master audio element to a random active output device
+      var deviceId = Array.from(pc.outputs.keys())[0] || 'default';
+      pc._masterAudioDeviceId = deviceId;
+      pc.outputs.set(deviceId, {
+          audio: audio
+      });
+      pc._mediaStreamSource = pc._audioContext.createMediaStreamSource(stream);
+      pc.pcStream = stream;
+      pc._updateAudioOutputs();
   };
-  
   /**
    * Use a single audio element to play the audio output stream. This does not
    *   support multiple output devices, and is a fallback for when AudioContext
    *   and/or HTMLAudioElement.setSinkId() is not available to the client.
    */
   PeerConnection.prototype._fallbackOnAddTrack = function fallbackOnAddTrack(pc, stream) {
-    var audio = document && document.createElement('audio');
-    audio.autoplay = true;
-  
-    if (!setAudioSource(audio, stream)) {
-      pc.log('Error attaching stream to element.');
-    }
-  
-    pc.outputs.set('default', {
-      audio: audio
-    });
-  };
-  
-  PeerConnection.prototype._setNetworkPriority = function (priority) {
-    if (!this.options || !this.options.dscp || !this._sender || typeof this._sender.getParameters !== 'function' || typeof this._sender.setParameters !== 'function') {
-      return;
-    }
-  
-    var params = this._sender.getParameters();
-    if (!params.priority && !(params.encodings && params.encodings.length)) {
-      return;
-    }
-  
-    // This is how MDN's RTPSenderParameters defines priority
-    params.priority = priority;
-  
-    // And this is how it's currently implemented in Chrome M72+
-    if (params.encodings && params.encodings.length) {
-      params.encodings.forEach(function (encoding) {
-        encoding.priority = priority;
-        encoding.networkPriority = priority;
+      var audio = document && document.createElement('audio');
+      audio.autoplay = true;
+      if (!setAudioSource(audio, stream)) {
+          pc.log('Error attaching stream to element.');
+      }
+      pc.outputs.set('default', {
+          audio: audio
       });
-    }
-  
-    this._sender.setParameters(params);
   };
-  
-  PeerConnection.prototype._setupPeerConnection = function (rtcConstraints, rtcConfiguration) {
-    var _this3 = this;
-  
-    var self = this;
-    var version = this._getProtocol();
-    version.create(this.log, rtcConstraints, rtcConfiguration);
-    addStream(version.pc, this.stream);
-  
-    var eventName = 'ontrack' in version.pc ? 'ontrack' : 'onaddstream';
-  
-    version.pc[eventName] = function (event) {
-      var stream = self._remoteStream = event.stream || event.streams[0];
-  
-      if (typeof version.pc.getSenders === 'function') {
-        _this3._sender = version.pc.getSenders()[0];
-      }
-  
-      if (self._isSinkSupported) {
-        self._onAddTrack(self, stream);
-      } else {
-        self._fallbackOnAddTrack(self, stream);
-      }
-  
-      self._startPollingVolume();
-    };
-    return version;
+  PeerConnection.prototype._setupPeerConnection = function (rtcConstraints, iceServers) {
+      var self = this;
+      var version = this._getProtocol();
+      version.create(this.log, rtcConstraints, iceServers);
+      addStream(version.pc, this.stream);
+      var eventName = 'ontrack' in version.pc
+          ? 'ontrack' : 'onaddstream';
+      version.pc[eventName] = function (event) {
+          var stream = self._remoteStream = event.stream || event.streams[0];
+          if (self._isSinkSupported) {
+              self._onAddTrack(self, stream);
+          }
+          else {
+              self._fallbackOnAddTrack(self, stream);
+          }
+          self._startPollingVolume();
+      };
+      return version;
   };
   PeerConnection.prototype._setupChannel = function () {
-    var _this4 = this;
-  
-    var pc = this.version.pc;
-  
-    // Chrome 25 supports onopen
-    this.version.pc.onopen = function () {
-      _this4.status = 'open';
-      _this4.onopen();
-    };
-  
-    // Chrome 26 doesn't support onopen so must detect state change
-    this.version.pc.onstatechange = function () {
-      if (_this4.version.pc && _this4.version.pc.readyState === 'stable') {
-        _this4.status = 'open';
-        _this4.onopen();
-      }
-    };
-  
-    // Chrome 27 changed onstatechange to onsignalingstatechange
-    this.version.pc.onsignalingstatechange = function () {
-      var state = pc.signalingState;
-      _this4.log('signalingState is "' + state + '"');
-  
-      if (_this4.version.pc && _this4.version.pc.signalingState === 'stable') {
-        _this4.status = 'open';
-        _this4.onopen();
-      }
-  
-      _this4.onsignalingstatechange(pc.signalingState);
-    };
-  
-    pc.onicecandidate = function (event) {
-      _this4.onicecandidate(event.candidate);
-    };
-  
-    pc.onicegatheringstatechange = function () {
-      _this4.onicegatheringstatechange(pc.iceGatheringState);
-    };
-  
-    pc.oniceconnectionstatechange = function () {
-      var state = pc.iceConnectionState;
-      // Grab our previous state to help determine cause of state change
-      var previousState = _this4._iceState;
-      _this4._iceState = state;
-  
-      var message = void 0;
-      switch (state) {
-        case 'connected':
-          if (previousState === 'disconnected') {
-            message = 'ICE liveliness check succeeded. Connection with Twilio restored';
-            _this4.log(message);
-            _this4.onreconnect(message);
+      var _this = this;
+      var self = this;
+      var pc = this.version.pc;
+      // Chrome 25 supports onopen
+      self.version.pc.onopen = function () {
+          self.status = 'open';
+          self.onopen();
+      };
+      // Chrome 26 doesn't support onopen so must detect state change
+      self.version.pc.onstatechange = function () {
+          if (self.version.pc && self.version.pc.readyState === 'stable') {
+              self.status = 'open';
+              self.onopen();
           }
-          break;
-        case 'disconnected':
-          message = 'ICE liveliness check failed. May be having trouble connecting to Twilio';
-          _this4.log(message);
-          _this4.ondisconnect(message);
-          break;
-        case 'failed':
-          // Takes care of checking->failed and disconnected->failed
-          message = previousState === 'checking' ? 'ICE negotiation with Twilio failed.' : 'Connection with Twilio was interrupted.';
-  
-          _this4.log(message);
-          _this4.onerror({
-            info: {
-              code: 31003,
-              message: message
-            },
-            disconnect: !_this4.options.enableIceRestart
-          });
-          break;
-        default:
-          _this4.log('iceConnectionState is "' + state + '"');
+      };
+      // Chrome 27 changed onstatechange to onsignalingstatechange
+      self.version.pc.onsignalingstatechange = function () {
+          var state = pc.signalingState;
+          self.log("signalingState is \"" + state + "\"");
+          if (self.version.pc && self.version.pc.signalingState === 'stable') {
+              self.status = 'open';
+              self.onopen();
+          }
+          self.onsignalingstatechange(pc.signalingState);
+      };
+      pc.onicecandidate = function onicecandidate(event) {
+          self.onicecandidate(event.candidate);
+      };
+      pc.oniceconnectionstatechange = function () {
+          var state = pc.iceConnectionState;
+          // Grab our previous state to help determine cause of state change
+          var previousState = _this._iceState;
+          _this._iceState = state;
+          var message;
+          switch (state) {
+              case 'connected':
+                  if (previousState === 'disconnected') {
+                      message = 'ICE liveliness check succeeded. Connection with Twilio restored';
+                      self.log(message);
+                      self.onreconnect(message);
+                  }
+                  break;
+              case 'disconnected':
+                  message = 'ICE liveliness check failed. May be having trouble connecting to Twilio';
+                  self.log(message);
+                  self.ondisconnect(message);
+                  break;
+              case 'failed':
+                  // Takes care of checking->failed and disconnected->failed
+                  message = (previousState === 'checking'
+                      ? 'ICE negotiation with Twilio failed.'
+                      : 'Connection with Twilio was interrupted.') + " Call will terminate.";
+                  self.log(message);
+                  self.onerror({
+                      info: {
+                          code: 31003,
+                          message: message
+                      },
+                      disconnect: true
+                  });
+                  break;
+              default:
+                  self.log("iceConnectionState is \"" + state + "\"");
+          }
+          self.oniceconnectionstatechange(state);
+      };
+  };
+  PeerConnection.prototype._initializeMediaStream = function (rtcConstraints, iceServers) {
+      // if mediastream already open then do nothing
+      if (this.status === 'open') {
+          return false;
       }
-  
-      _this4.oniceconnectionstatechange(state);
-    };
+      if (this.pstream.status === 'disconnected') {
+          this.onerror({ info: {
+                  code: 31000,
+                  message: 'Cannot establish connection. Client is disconnected'
+              } });
+          this.close();
+          return false;
+      }
+      this.version = this._setupPeerConnection(rtcConstraints, iceServers);
+      this._setupChannel();
+      return true;
   };
-  PeerConnection.prototype._initializeMediaStream = function (rtcConstraints, rtcConfiguration) {
-    // if mediastream already open then do nothing
-    if (this.status === 'open') {
-      return false;
-    }
-    if (this.pstream.status === 'disconnected') {
-      this.onerror({ info: {
-          code: 31000,
-          message: 'Cannot establish connection. Client is disconnected'
-        } });
-      this.close();
-      return false;
-    }
-    this.version = this._setupPeerConnection(rtcConstraints, rtcConfiguration);
-    this._setupChannel();
-    return true;
-  };
-  
-  /**
-   * Remove reconnection-related listeners
-   * @private
-   */
-  PeerConnection.prototype._removeReconnectionListeners = function () {
-    if (this.pstream) {
-      this.pstream.removeListener('answer', this._onAnswerOrRinging);
-      this.pstream.removeListener('hangup', this._onHangup);
-    }
-  };
-  
-  /**
-   * Restarts ICE for the current connection
-   * @private
-   * @returns A promise that rejects with a boolean representing whether or not ICE restart should still be attempted.
-   */
-  PeerConnection.prototype.iceRestart = function () {
-    var _this5 = this;
-  
-    if (!this.options.enableIceRestart) {
-      return Promise.reject(false);
-    }
-    return new Promise(function (resolve, reject) {
-      _this5.log('Attempting to restart ICE...');
-      _this5.version.createOffer(_this5.codecPreferences, { iceRestart: true }).then(function () {
-        _this5._removeReconnectionListeners();
-  
-        _this5._onAnswerOrRinging = function (payload) {
-          _this5._removeReconnectionListeners();
+  PeerConnection.prototype.makeOutgoingCall = function (token, params, callsid, rtcConstraints, iceServers, onMediaStarted) {
+      if (!this._initializeMediaStream(rtcConstraints, iceServers)) {
+          return;
+      }
+      var self = this;
+      this.callSid = callsid;
+      function onAnswerSuccess() {
+          onMediaStarted(self.version.pc);
+      }
+      function onAnswerError(err) {
+          var errMsg = err.message || err;
+          self.onerror({ info: { code: 31000, message: "Error processing answer: " + errMsg } });
+      }
+      this._onAnswerOrRinging = function (payload) {
           if (!payload.sdp) {
-            return reject(true);
+              return;
           }
-  
-          // Either this did not come from createOffer from iceRestart
-          // or a createOffer came in late and a previous answer has already been applied
-          // so we ignore this
-          if (_this5.version.pc.signalingState !== 'have-local-offer') {
-            return reject(false);
+          self._answerSdp = payload.sdp;
+          if (self.status !== 'closed') {
+              self.version.processAnswer(payload.sdp, onAnswerSuccess, onAnswerError);
           }
-  
-          _this5._answerSdp = payload.sdp;
-          if (_this5.status !== 'closed') {
-            return _this5.version.processAnswer(_this5.codecPreferences, payload.sdp, resolve, function (err) {
-              var errMsg = err.message || err;
-              _this5.onerror({ info: { code: 31000, message: 'Error processing answer to re-invite: ' + errMsg } });
-              reject(true);
-            });
+          self.pstream.removeListener('answer', self._onAnswerOrRinging);
+          self.pstream.removeListener('ringing', self._onAnswerOrRinging);
+      };
+      this.pstream.on('answer', this._onAnswerOrRinging);
+      this.pstream.on('ringing', this._onAnswerOrRinging);
+      function onOfferSuccess() {
+          if (self.status !== 'closed') {
+              self.pstream.publish('invite', {
+                  sdp: self.version.getSDP(),
+                  callsid: self.callSid,
+                  twilio: {
+                      params: params
+                  }
+              });
           }
-          return reject(true);
-        };
-  
-        _this5._onHangup = function () {
-          _this5._removeReconnectionListeners();
-          reject(false);
-        };
-  
-        _this5.pstream.on('answer', _this5._onAnswerOrRinging);
-        _this5.pstream.on('hangup', _this5._onHangup);
-        _this5.pstream.reinvite(_this5.version.getSDP(), _this5.callSid);
-      }, function () {
-        return reject(true);
-      });
-    });
+      }
+      function onOfferError(err) {
+          var errMsg = err.message || err;
+          self.onerror({ info: { code: 31000, message: "Error creating the offer: " + errMsg } });
+      }
+      this.version.createOffer({ audio: true }, onOfferSuccess, onOfferError);
   };
-  
-  PeerConnection.prototype.makeOutgoingCall = function (token, params, callsid, rtcConstraints, rtcConfiguration, onMediaStarted) {
-    var _this6 = this;
-  
-    if (!this._initializeMediaStream(rtcConstraints, rtcConfiguration)) {
-      return;
-    }
-  
-    var self = this;
-    this.callSid = callsid;
-    function onAnswerSuccess() {
-      self._setNetworkPriority('high');
-      onMediaStarted(self.version.pc);
-    }
-    function onAnswerError(err) {
-      var errMsg = err.message || err;
-      self.onerror({ info: { code: 31000, message: 'Error processing answer: ' + errMsg } });
-    }
-    this._onAnswerOrRinging = function (payload) {
-      if (!payload.sdp) {
-        return;
+  PeerConnection.prototype.answerIncomingCall = function (callSid, sdp, rtcConstraints, iceServers, onMediaStarted) {
+      if (!this._initializeMediaStream(rtcConstraints, iceServers)) {
+          return;
       }
-  
-      self._answerSdp = payload.sdp;
-      if (self.status !== 'closed') {
-        self.version.processAnswer(_this6.codecPreferences, payload.sdp, onAnswerSuccess, onAnswerError);
+      this._answerSdp = sdp.replace(/^a=setup:actpass$/gm, 'a=setup:passive');
+      this.callSid = callSid;
+      var self = this;
+      function onAnswerSuccess() {
+          if (self.status !== 'closed') {
+              self.pstream.publish('answer', {
+                  callsid: callSid,
+                  sdp: self.version.getSDP()
+              });
+              onMediaStarted(self.version.pc);
+          }
       }
-      self.pstream.removeListener('answer', self._onAnswerOrRinging);
-      self.pstream.removeListener('ringing', self._onAnswerOrRinging);
-    };
-    this.pstream.on('answer', this._onAnswerOrRinging);
-    this.pstream.on('ringing', this._onAnswerOrRinging);
-  
-    function onOfferSuccess() {
-      if (self.status !== 'closed') {
-        self.pstream.publish('invite', {
-          sdp: self.version.getSDP(),
-          callsid: self.callSid,
-          twilio: params ? { params: params } : {}
-        });
+      function onAnswerError(err) {
+          var errMsg = err.message || err;
+          self.onerror({ info: { code: 31000, message: "Error creating the answer: " + errMsg } });
       }
-    }
-  
-    function onOfferError(err) {
-      var errMsg = err.message || err;
-      self.onerror({ info: { code: 31000, message: 'Error creating the offer: ' + errMsg } });
-    }
-  
-    this.version.createOffer(this.codecPreferences, { audio: true }, onOfferSuccess, onOfferError);
-  };
-  PeerConnection.prototype.answerIncomingCall = function (callSid, sdp, rtcConstraints, rtcConfiguration, onMediaStarted) {
-    if (!this._initializeMediaStream(rtcConstraints, rtcConfiguration)) {
-      return;
-    }
-    this._answerSdp = sdp.replace(/^a=setup:actpass$/gm, 'a=setup:passive');
-    this.callSid = callSid;
-    var self = this;
-    function onAnswerSuccess() {
-      if (self.status !== 'closed') {
-        self.pstream.publish('answer', {
-          callsid: callSid,
-          sdp: self.version.getSDP()
-        });
-        self._setNetworkPriority('high');
-        onMediaStarted(self.version.pc);
-      }
-    }
-    function onAnswerError(err) {
-      var errMsg = err.message || err;
-      self.onerror({ info: { code: 31000, message: 'Error creating the answer: ' + errMsg } });
-    }
-    this.version.processSDP(this.codecPreferences, sdp, { audio: true }, onAnswerSuccess, onAnswerError);
+      this.version.processSDP(sdp, { audio: true }, onAnswerSuccess, onAnswerError);
   };
   PeerConnection.prototype.close = function () {
-    if (this.version && this.version.pc) {
-      if (this.version.pc.signalingState !== 'closed') {
-        this.version.pc.close();
+      if (this.version && this.version.pc) {
+          if (this.version.pc.signalingState !== 'closed') {
+              this.version.pc.close();
+          }
+          this.version.pc = null;
       }
-  
-      this.version.pc = null;
-    }
-    if (this.stream) {
-      this.mute(false);
-      this._stopStream(this.stream);
-    }
-    this.stream = null;
-    this._removeReconnectionListeners();
-  
-    Promise.all(this._removeAudioOutputs()).catch(function () {
-      // We don't need to alert about failures here.
-    });
-    if (this._mediaStreamSource) {
-      this._mediaStreamSource.disconnect();
-    }
-    if (this._inputAnalyser) {
-      this._inputAnalyser.disconnect();
-    }
-    if (this._outputAnalyser) {
-      this._outputAnalyser.disconnect();
-    }
-    if (this._inputAnalyser2) {
-      this._inputAnalyser2.disconnect();
-    }
-    if (this._outputAnalyser2) {
-      this._outputAnalyser2.disconnect();
-    }
-    this.status = 'closed';
-    this.onclose();
+      if (this.stream) {
+          this.mute(false);
+          this._stopStream(this.stream);
+      }
+      this.stream = null;
+      if (this.pstream) {
+          this.pstream.removeListener('answer', this._onAnswerOrRinging);
+      }
+      Promise.all(this._removeAudioOutputs()).catch(function () {
+          // We don't need to alert about failures here.
+      });
+      if (this._mediaStreamSource) {
+          this._mediaStreamSource.disconnect();
+      }
+      if (this._inputAnalyser) {
+          this._inputAnalyser.disconnect();
+      }
+      if (this._outputAnalyser) {
+          this._outputAnalyser.disconnect();
+      }
+      this.status = 'closed';
+      this.onclose();
   };
   PeerConnection.prototype.reject = function (callSid) {
-    this.callSid = callSid;
+      this.callSid = callSid;
   };
   PeerConnection.prototype.ignore = function (callSid) {
-    this.callSid = callSid;
+      this.callSid = callSid;
   };
   /**
    * Mute or unmute input audio. If the stream is not yet present, the setting
@@ -5398,20 +4543,16 @@ This software includes backoff under the following (MIT) license.
    *   be muted or unmuted.
    */
   PeerConnection.prototype.mute = function (shouldMute) {
-    this.isMuted = shouldMute;
-    if (!this.stream) {
-      return;
-    }
-  
-    if (this._sender && this._sender.track) {
-      this._sender.track.enabled = !shouldMute;
-    } else {
-      var audioTracks = typeof this.stream.getAudioTracks === 'function' ? this.stream.getAudioTracks() : this.stream.audioTracks;
-  
+      this.isMuted = shouldMute;
+      if (!this.stream) {
+          return;
+      }
+      var audioTracks = typeof this.stream.getAudioTracks === 'function'
+          ? this.stream.getAudioTracks()
+          : this.stream.audioTracks;
       audioTracks.forEach(function (track) {
-        track.enabled = !shouldMute;
+          track.enabled = !shouldMute;
       });
-    }
   };
   /**
    * Get or create an RTCDTMFSender for the first local audio MediaStreamTrack
@@ -5420,96 +4561,73 @@ This software includes backoff under the following (MIT) license.
    * @returns ?RTCDTMFSender
    */
   PeerConnection.prototype.getOrCreateDTMFSender = function getOrCreateDTMFSender() {
-    if (this._dtmfSender || this._dtmfSenderUnsupported) {
-      return this._dtmfSender || null;
-    }
-  
-    var self = this;
-    var pc = this.version.pc;
-    if (!pc) {
-      this.log('No RTCPeerConnection available to call createDTMFSender on');
+      if (this._dtmfSender || this._dtmfSenderUnsupported) {
+          return this._dtmfSender || null;
+      }
+      var self = this;
+      var pc = this.version.pc;
+      if (!pc) {
+          this.log('No RTCPeerConnection available to call createDTMFSender on');
+          return null;
+      }
+      if (typeof pc.getSenders === 'function' && (typeof RTCDTMFSender === 'function' || typeof RTCDtmfSender === 'function')) {
+          var chosenSender = pc.getSenders().find(function (sender) { return sender.dtmf; });
+          if (chosenSender) {
+              this.log('Using RTCRtpSender#dtmf');
+              this._dtmfSender = chosenSender.dtmf;
+              return this._dtmfSender;
+          }
+      }
+      if (typeof pc.createDTMFSender === 'function' && typeof pc.getLocalStreams === 'function') {
+          var track = pc.getLocalStreams().map(function (stream) {
+              var tracks = self._getAudioTracks(stream);
+              return tracks && tracks[0];
+          })[0];
+          if (!track) {
+              this.log('No local audio MediaStreamTrack available on the RTCPeerConnection to pass to createDTMFSender');
+              return null;
+          }
+          this.log('Creating RTCDTMFSender');
+          this._dtmfSender = pc.createDTMFSender(track);
+          return this._dtmfSender;
+      }
+      this.log('RTCPeerConnection does not support RTCDTMFSender');
+      this._dtmfSenderUnsupported = true;
       return null;
-    }
-  
-    if (typeof pc.getSenders === 'function' && (typeof RTCDTMFSender === 'function' || typeof RTCDtmfSender === 'function')) {
-      var chosenSender = pc.getSenders().find(function (sender) {
-        return sender.dtmf;
-      });
-      if (chosenSender) {
-        this.log('Using RTCRtpSender#dtmf');
-        this._dtmfSender = chosenSender.dtmf;
-        return this._dtmfSender;
-      }
-    }
-  
-    if (typeof pc.createDTMFSender === 'function' && typeof pc.getLocalStreams === 'function') {
-      var track = pc.getLocalStreams().map(function (stream) {
-        var tracks = self._getAudioTracks(stream);
-        return tracks && tracks[0];
-      })[0];
-  
-      if (!track) {
-        this.log('No local audio MediaStreamTrack available on the RTCPeerConnection to pass to createDTMFSender');
-        return null;
-      }
-  
-      this.log('Creating RTCDTMFSender');
-      this._dtmfSender = pc.createDTMFSender(track);
-      return this._dtmfSender;
-    }
-  
-    this.log('RTCPeerConnection does not support RTCDTMFSender');
-    this._dtmfSenderUnsupported = true;
-    return null;
   };
-  
-  PeerConnection.prototype._canStopMediaStreamTrack = function () {
-    return typeof MediaStreamTrack.prototype.stop === 'function';
-  };
-  
-  PeerConnection.prototype._getAudioTracks = function (stream) {
-    return typeof stream.getAudioTracks === 'function' ? stream.getAudioTracks() : stream.audioTracks;
-  };
-  
-  PeerConnection.prototype._getProtocol = function () {
-    return PeerConnection.protocol;
-  };
-  
-  PeerConnection.protocol = function () {
-    return RTCPC.test() ? new RTCPC() : null;
-  }();
-  
+  PeerConnection.prototype._canStopMediaStreamTrack = function () { return typeof MediaStreamTrack.prototype.stop === 'function'; };
+  PeerConnection.prototype._getAudioTracks = function (stream) { return typeof stream.getAudioTracks === 'function' ?
+      stream.getAudioTracks() : stream.audioTracks; };
+  PeerConnection.prototype._getProtocol = function () { return PeerConnection.protocol; };
+  PeerConnection.protocol = ((function () { return RTCPC.test() ? new RTCPC() : null; }))();
   function addStream(pc, stream) {
-    if (typeof pc.addTrack === 'function') {
-      stream.getAudioTracks().forEach(function (track) {
-        // The second parameters, stream, should not be necessary per the latest editor's
-        //   draft, but FF requires it. https://bugzilla.mozilla.org/show_bug.cgi?id=1231414
-        pc.addTrack(track, stream);
-      });
-    } else {
-      pc.addStream(stream);
-    }
+      if (typeof pc.addTrack === 'function') {
+          stream.getAudioTracks().forEach(function (track) {
+              // The second parameters, stream, should not be necessary per the latest editor's
+              //   draft, but FF requires it. https://bugzilla.mozilla.org/show_bug.cgi?id=1231414
+              pc.addTrack(track, stream);
+          });
+      }
+      else {
+          pc.addStream(stream);
+      }
   }
-  
   function cloneStream(oldStream) {
-    var newStream = typeof MediaStream !== 'undefined' ? new MediaStream()
-    // eslint-disable-next-line
-    : new webkitMediaStream();
-  
-    oldStream.getAudioTracks().forEach(newStream.addTrack, newStream);
-    return newStream;
+      var newStream = typeof MediaStream !== 'undefined'
+          ? new MediaStream()
+          // eslint-disable-next-line
+          : new webkitMediaStream();
+      oldStream.getAudioTracks().forEach(newStream.addTrack, newStream);
+      return newStream;
   }
-  
   function removeStream(pc, stream) {
-    if (typeof pc.removeTrack === 'function') {
-      pc.getSenders().forEach(function (sender) {
-        pc.removeTrack(sender);
-      });
-    } else {
-      pc.removeStream(stream);
-    }
+      if (typeof pc.removeTrack === 'function') {
+          pc.getSenders().forEach(function (sender) { pc.removeTrack(sender); });
+      }
+      else {
+          pc.removeStream(stream);
+      }
   }
-  
   /**
    * Set the source of an HTMLAudioElement to the specified MediaStream
    * @param {HTMLAudioElement} audio
@@ -5517,149 +4635,115 @@ This software includes backoff under the following (MIT) license.
    * @returns {boolean} Whether the audio source was set successfully
    */
   function setAudioSource(audio, stream) {
-    if (typeof audio.srcObject !== 'undefined') {
-      audio.srcObject = stream;
-    } else if (typeof audio.mozSrcObject !== 'undefined') {
-      audio.mozSrcObject = stream;
-    } else if (typeof audio.src !== 'undefined') {
-      var _window = audio.options.window || window;
-      audio.src = (_window.URL || _window.webkitURL).createObjectURL(stream);
-    } else {
-      return false;
-    }
-  
-    return true;
+      if (typeof audio.srcObject !== 'undefined') {
+          audio.srcObject = stream;
+      }
+      else if (typeof audio.mozSrcObject !== 'undefined') {
+          audio.mozSrcObject = stream;
+      }
+      else if (typeof audio.src !== 'undefined') {
+          var _window = audio.options.window || window;
+          audio.src = (_window.URL || _window.webkitURL).createObjectURL(stream);
+      }
+      else {
+          return false;
+      }
+      return true;
   }
-  
   PeerConnection.enabled = !!PeerConnection.protocol;
-  
   module.exports = PeerConnection;
-  },{"../log":10,"../util":29,"./rtcpc":21}],21:[function(require,module,exports){
+  
+  },{"../log":9,"../util":27,"./rtcpc":20}],20:[function(require,module,exports){
   (function (global){
-  'use strict';
-  
-  var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) { return typeof obj; } : function (obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; };
-  
   /* global webkitRTCPeerConnection, mozRTCPeerConnection, mozRTCSessionDescription, mozRTCIceCandidate */
   var RTCPeerConnectionShim = require('rtcpeerconnection-shim');
-  
-  var _require = require('./sdp'),
-      setCodecPreferences = _require.setCodecPreferences;
-  
   var util = require('../util');
-  
   function RTCPC() {
-    if (typeof window === 'undefined') {
-      this.log('No RTCPeerConnection implementation available. The window object was not found.');
-      return;
-    }
-  
-    if (util.isEdge()) {
-      this.RTCPeerConnection = new RTCPeerConnectionShim(typeof window !== 'undefined' ? window : global);
-    } else if (typeof window.RTCPeerConnection === 'function') {
-      this.RTCPeerConnection = window.RTCPeerConnection;
-    } else if (typeof window.webkitRTCPeerConnection === 'function') {
-      this.RTCPeerConnection = webkitRTCPeerConnection;
-    } else if (typeof window.mozRTCPeerConnection === 'function') {
-      this.RTCPeerConnection = mozRTCPeerConnection;
-      window.RTCSessionDescription = mozRTCSessionDescription;
-      window.RTCIceCandidate = mozRTCIceCandidate;
-    } else {
-      this.log('No RTCPeerConnection implementation available');
-    }
+      if (typeof window === 'undefined') {
+          this.log('No RTCPeerConnection implementation available. The window object was not found.');
+          return;
+      }
+      if (util.isEdge()) {
+          this.RTCPeerConnection = new RTCPeerConnectionShim(typeof window !== 'undefined' ? window : global);
+      }
+      else if (typeof window.RTCPeerConnection === 'function') {
+          this.RTCPeerConnection = window.RTCPeerConnection;
+      }
+      else if (typeof window.webkitRTCPeerConnection === 'function') {
+          this.RTCPeerConnection = webkitRTCPeerConnection;
+      }
+      else if (typeof window.mozRTCPeerConnection === 'function') {
+          this.RTCPeerConnection = mozRTCPeerConnection;
+          window.RTCSessionDescription = mozRTCSessionDescription;
+          window.RTCIceCandidate = mozRTCIceCandidate;
+      }
+      else {
+          this.log('No RTCPeerConnection implementation available');
+      }
   }
-  
-  RTCPC.prototype.create = function (log, rtcConstraints, rtcConfiguration) {
-    this.log = log;
-    this.pc = new this.RTCPeerConnection(rtcConfiguration, rtcConstraints);
+  RTCPC.prototype.create = function (log, rtcConstraints, iceServers) {
+      this.log = log;
+      this.pc = new this.RTCPeerConnection({ iceServers: iceServers, sdpSemantics: 'plan-b' }, rtcConstraints);
   };
   RTCPC.prototype.createModernConstraints = function (c) {
-    // createOffer differs between Chrome 23 and Chrome 24+.
-    // See https://groups.google.com/forum/?fromgroups=#!topic/discuss-webrtc/JBDZtrMumyU
-    // Unfortunately I haven't figured out a way to detect which format
-    // is required ahead of time, so we'll first try the old way, and
-    // if we get an exception, then we'll try the new way.
-    if (typeof c === 'undefined') {
-      return null;
-    }
-    // NOTE(mroberts): As of Chrome 38, Chrome still appears to expect
-    // constraints under the 'mandatory' key, and with the first letter of each
-    // constraint capitalized. Firefox, on the other hand, has deprecated the
-    // 'mandatory' key and does not expect the first letter of each constraint
-    // capitalized.
-    var nc = Object.assign({}, c);
-    if (typeof webkitRTCPeerConnection !== 'undefined' && !util.isEdge()) {
-      nc.mandatory = {};
-      if (typeof c.audio !== 'undefined') {
-        nc.mandatory.OfferToReceiveAudio = c.audio;
+      // createOffer differs between Chrome 23 and Chrome 24+.
+      // See https://groups.google.com/forum/?fromgroups=#!topic/discuss-webrtc/JBDZtrMumyU
+      // Unfortunately I haven't figured out a way to detect which format
+      // is required ahead of time, so we'll first try the old way, and
+      // if we get an exception, then we'll try the new way.
+      if (typeof c === 'undefined') {
+          return null;
       }
-      if (typeof c.video !== 'undefined') {
-        nc.mandatory.OfferToReceiveVideo = c.video;
+      // NOTE(mroberts): As of Chrome 38, Chrome still appears to expect
+      // constraints under the 'mandatory' key, and with the first letter of each
+      // constraint capitalized. Firefox, on the other hand, has deprecated the
+      // 'mandatory' key and does not expect the first letter of each constraint
+      // capitalized.
+      var nc = {};
+      if (typeof webkitRTCPeerConnection !== 'undefined' && !util.isEdge()) {
+          nc.mandatory = {};
+          if (typeof c.audio !== 'undefined') {
+              nc.mandatory.OfferToReceiveAudio = c.audio;
+          }
+          if (typeof c.video !== 'undefined') {
+              nc.mandatory.OfferToReceiveVideo = c.video;
+          }
       }
-    } else {
-      if (typeof c.audio !== 'undefined') {
-        nc.offerToReceiveAudio = c.audio;
+      else {
+          if (typeof c.audio !== 'undefined') {
+              nc.offerToReceiveAudio = c.audio;
+          }
+          if (typeof c.video !== 'undefined') {
+              nc.offerToReceiveVideo = c.video;
+          }
       }
-      if (typeof c.video !== 'undefined') {
-        nc.offerToReceiveVideo = c.video;
-      }
-    }
-  
-    delete nc.audio;
-    delete nc.video;
-  
-    return nc;
+      return nc;
   };
-  RTCPC.prototype.createOffer = function (codecPreferences, constraints, onSuccess, onError) {
-    var _this = this;
-  
-    constraints = this.createModernConstraints(constraints);
-    return promisifyCreate(this.pc.createOffer, this.pc)(constraints).then(function (offer) {
-      if (!_this.pc) {
-        return Promise.resolve();
-      }
-  
-      return promisifySet(_this.pc.setLocalDescription, _this.pc)(new RTCSessionDescription({
-        type: 'offer',
-        sdp: setCodecPreferences(offer.sdp, codecPreferences)
-      }));
-    }).then(onSuccess, onError);
+  RTCPC.prototype.createOffer = function (constraints, onSuccess, onError) {
+      var self = this;
+      constraints = this.createModernConstraints(constraints);
+      promisifyCreate(this.pc.createOffer, this.pc)(constraints).then(function (sd) { return self.pc && promisifySet(self.pc.setLocalDescription, self.pc)(new RTCSessionDescription(sd)); }).then(onSuccess, onError);
   };
-  RTCPC.prototype.createAnswer = function (codecPreferences, constraints, onSuccess, onError) {
-    var _this2 = this;
-  
-    constraints = this.createModernConstraints(constraints);
-    return promisifyCreate(this.pc.createAnswer, this.pc)(constraints).then(function (answer) {
-      if (!_this2.pc) {
-        return Promise.resolve();
-      }
-  
-      return promisifySet(_this2.pc.setLocalDescription, _this2.pc)(new RTCSessionDescription({
-        type: 'answer',
-        sdp: setCodecPreferences(answer.sdp, codecPreferences)
-      }));
-    }).then(onSuccess, onError);
+  RTCPC.prototype.createAnswer = function (constraints, onSuccess, onError) {
+      var self = this;
+      constraints = this.createModernConstraints(constraints);
+      promisifyCreate(this.pc.createAnswer, this.pc)(constraints).then(function (sd) { return self.pc && promisifySet(self.pc.setLocalDescription, self.pc)(new RTCSessionDescription(sd)); }).then(onSuccess, onError);
   };
-  RTCPC.prototype.processSDP = function (codecPreferences, sdp, constraints, onSuccess, onError) {
-    var _this3 = this;
-  
-    sdp = setCodecPreferences(sdp, codecPreferences);
-  
-    var desc = new RTCSessionDescription({ sdp: sdp, type: 'offer' });
-    return promisifySet(this.pc.setRemoteDescription, this.pc)(desc).then(function () {
-      _this3.createAnswer(codecPreferences, constraints, onSuccess, onError);
-    });
+  RTCPC.prototype.processSDP = function (sdp, constraints, onSuccess, onError) {
+      var self = this;
+      var desc = new RTCSessionDescription({ sdp: sdp, type: 'offer' });
+      promisifySet(this.pc.setRemoteDescription, this.pc)(desc).then(function () {
+          self.createAnswer(constraints, onSuccess, onError);
+      });
   };
   RTCPC.prototype.getSDP = function () {
-    return this.pc.localDescription.sdp;
+      return this.pc.localDescription.sdp;
   };
-  RTCPC.prototype.processAnswer = function (codecPreferences, sdp, onSuccess, onError) {
-    if (!this.pc) {
-      return Promise.resolve();
-    }
-    sdp = setCodecPreferences(sdp, codecPreferences);
-  
-    return promisifySet(this.pc.setRemoteDescription, this.pc)(new RTCSessionDescription({ sdp: sdp, type: 'answer' })).then(onSuccess, onError);
+  RTCPC.prototype.processAnswer = function (sdp, onSuccess, onError) {
+      if (!this.pc) {
+          return;
+      }
+      promisifySet(this.pc.setRemoteDescription, this.pc)(new RTCSessionDescription({ sdp: sdp, type: 'answer' })).then(onSuccess, onError);
   };
   /* NOTE(mroberts): Firefox 18 through 21 include a `mozRTCPeerConnection`
      object, but attempting to instantiate it will throw the error
@@ -5675,208 +4759,74 @@ This software includes backoff under the following (MIT) license.
   
   */
   RTCPC.test = function () {
-    if ((typeof navigator === 'undefined' ? 'undefined' : _typeof(navigator)) === 'object') {
-      var getUserMedia = navigator.mediaDevices && navigator.mediaDevices.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.getUserMedia;
-  
-      if (getUserMedia && typeof window.RTCPeerConnection === 'function') {
-        return true;
-      } else if (getUserMedia && typeof window.webkitRTCPeerConnection === 'function') {
-        return true;
-      } else if (getUserMedia && typeof window.mozRTCPeerConnection === 'function') {
-        try {
-          // eslint-disable-next-line babel/new-cap
-          var test = new window.mozRTCPeerConnection();
-          if (typeof test.getLocalStreams !== 'function') return false;
-        } catch (e) {
-          return false;
-        }
-        return true;
-      } else if (typeof RTCIceGatherer !== 'undefined') {
-        return true;
+      if (typeof navigator === 'object') {
+          var getUserMedia = (navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+              || navigator.webkitGetUserMedia
+              || navigator.mozGetUserMedia
+              || navigator.getUserMedia;
+          if (getUserMedia && typeof window.RTCPeerConnection === 'function') {
+              return true;
+          }
+          else if (getUserMedia && typeof window.webkitRTCPeerConnection === 'function') {
+              return true;
+          }
+          else if (getUserMedia && typeof window.mozRTCPeerConnection === 'function') {
+              try {
+                  // eslint-disable-next-line babel/new-cap
+                  var test_1 = new window.mozRTCPeerConnection();
+                  if (typeof test_1.getLocalStreams !== 'function')
+                      return false;
+              }
+              catch (e) {
+                  return false;
+              }
+              return true;
+          }
+          else if (typeof RTCIceGatherer !== 'undefined') {
+              return true;
+          }
       }
-    }
-  
-    return false;
+      return false;
   };
-  
   function promisify(fn, ctx, areCallbacksFirst) {
-    return function () {
-      var args = Array.prototype.slice.call(arguments);
-  
-      return new Promise(function (resolve) {
-        resolve(fn.apply(ctx, args));
-      }).catch(function () {
-        return new Promise(function (resolve, reject) {
-          fn.apply(ctx, areCallbacksFirst ? [resolve, reject].concat(args) : args.concat([resolve, reject]));
-        });
-      });
-    };
+      return function () {
+          var args = Array.prototype.slice.call(arguments);
+          return new Promise(function (resolve) {
+              resolve(fn.apply(ctx, args));
+          }).catch(function () { return new Promise(function (resolve, reject) {
+              fn.apply(ctx, areCallbacksFirst
+                  ? [resolve, reject].concat(args)
+                  : args.concat([resolve, reject]));
+          }); });
+      };
   }
-  
   function promisifyCreate(fn, ctx) {
-    return promisify(fn, ctx, true);
+      return promisify(fn, ctx, true);
   }
-  
   function promisifySet(fn, ctx) {
-    return promisify(fn, ctx, false);
+      return promisify(fn, ctx, false);
   }
-  
   module.exports = RTCPC;
+  
   }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-  },{"../util":29,"./sdp":22,"rtcpeerconnection-shim":49}],22:[function(require,module,exports){
-  'use strict';
-  
-  var util = require('../util');
-  
-  var ptToFixedBitrateAudioCodecName = {
-    0: 'PCMU',
-    8: 'PCMA'
-  };
-  
-  /**
-   * Return a new SDP string with the re-ordered codec preferences.
-   * @param {string} sdp
-   * @param {Array<AudioCodec>} preferredCodecs - If empty, the existing order
-   *   of audio codecs is preserved
-   * @returns {string} Updated SDP string
-   */
-  function setCodecPreferences(sdp, preferredCodecs) {
-    var mediaSections = getMediaSections(sdp);
-    var session = sdp.split('\r\nm=')[0];
-    return [session].concat(mediaSections.map(function (section) {
-      // Codec preferences should not be applied to m=application sections.
-      if (!/^m=(audio|video)/.test(section)) {
-        return section;
-      }
-      var kind = section.match(/^m=(audio|video)/)[1];
-      var codecMap = createCodecMapForMediaSection(section);
-      var payloadTypes = getReorderedPayloadTypes(codecMap, preferredCodecs);
-      var newSection = setPayloadTypesInMediaSection(payloadTypes, section);
-  
-      var pcmaPayloadTypes = codecMap.get('pcma') || [];
-      var pcmuPayloadTypes = codecMap.get('pcmu') || [];
-      var fixedBitratePayloadTypes = kind === 'audio' ? new Set(pcmaPayloadTypes.concat(pcmuPayloadTypes)) : new Set();
-  
-      return fixedBitratePayloadTypes.has(payloadTypes[0]) ? newSection.replace(/\r\nb=(AS|TIAS):([0-9]+)/g, '') : newSection;
-    })).join('\r\n');
-  }
-  
-  /**
-   * Get the m= sections of a particular kind and direction from an sdp.
-   * @param {string} sdp - SDP string
-   * @param {string} [kind] - Pattern for matching kind
-   * @param {string} [direction] - Pattern for matching direction
-   * @returns {Array<string>} mediaSections
-   */
-  function getMediaSections(sdp, kind, direction) {
-    return sdp.replace(/\r\n\r\n$/, '\r\n').split('\r\nm=').slice(1).map(function (mediaSection) {
-      return 'm=' + mediaSection;
-    }).filter(function (mediaSection) {
-      var kindPattern = new RegExp('m=' + (kind || '.*'), 'gm');
-      var directionPattern = new RegExp('a=' + (direction || '.*'), 'gm');
-      return kindPattern.test(mediaSection) && directionPattern.test(mediaSection);
-    });
-  }
-  
-  /**
-   * Create a Codec Map for the given m= section.
-   * @param {string} section - The given m= section
-   * @returns {Map<Codec, Array<PT>>}
-   */
-  function createCodecMapForMediaSection(section) {
-    return Array.from(createPtToCodecName(section)).reduce(function (codecMap, pair) {
-      var pt = pair[0];
-      var codecName = pair[1];
-      var pts = codecMap.get(codecName) || [];
-      return codecMap.set(codecName, pts.concat(pt));
-    }, new Map());
-  }
-  
-  /**
-   * Create the reordered Codec Payload Types based on the preferred Codec Names.
-   * @param {Map<Codec, Array<PT>>} codecMap - Codec Map
-   * @param {Array<Codec>} preferredCodecs - Preferred Codec Names
-   * @returns {Array<PT>} Reordered Payload Types
-   */
-  function getReorderedPayloadTypes(codecMap, preferredCodecs) {
-    preferredCodecs = preferredCodecs.map(function (codecName) {
-      return codecName.toLowerCase();
-    });
-  
-    var preferredPayloadTypes = util.flatMap(preferredCodecs, function (codecName) {
-      return codecMap.get(codecName) || [];
-    });
-  
-    var remainingCodecs = util.difference(Array.from(codecMap.keys()), preferredCodecs);
-    var remainingPayloadTypes = util.flatMap(remainingCodecs, function (codecName) {
-      return codecMap.get(codecName);
-    });
-  
-    return preferredPayloadTypes.concat(remainingPayloadTypes);
-  }
-  
-  /**
-   * Set the given Codec Payload Types in the first line of the given m= section.
-   * @param {Array<PT>} payloadTypes - Payload Types
-   * @param {string} section - Given m= section
-   * @returns {string} - Updated m= section
-   */
-  function setPayloadTypesInMediaSection(payloadTypes, section) {
-    var lines = section.split('\r\n');
-    var mLine = lines[0];
-    var otherLines = lines.slice(1);
-    mLine = mLine.replace(/([0-9]+\s?)+$/, payloadTypes.join(' '));
-    return [mLine].concat(otherLines).join('\r\n');
-  }
-  
-  /**
-   * Create a Map from PTs to codec names for the given m= section.
-   * @param {string} mediaSection - The given m= section.
-   * @returns {Map<PT, Codec>} ptToCodecName
-   */
-  function createPtToCodecName(mediaSection) {
-    return getPayloadTypesInMediaSection(mediaSection).reduce(function (ptToCodecName, pt) {
-      var rtpmapPattern = new RegExp('a=rtpmap:' + pt + ' ([^/]+)');
-      var matches = mediaSection.match(rtpmapPattern);
-      var codecName = matches ? matches[1].toLowerCase() : ptToFixedBitrateAudioCodecName[pt] ? ptToFixedBitrateAudioCodecName[pt].toLowerCase() : '';
-      return ptToCodecName.set(pt, codecName);
-    }, new Map());
-  }
-  
-  /**
-   * Get the Codec Payload Types present in the first line of the given m= section
-   * @param {string} section - The m= section
-   * @returns {Array<PT>} Payload Types
-   */
-  function getPayloadTypesInMediaSection(section) {
-    var mLine = section.split('\r\n')[0];
-  
-    // In "m=<kind> <port> <proto> <payload_type_1> <payload_type_2> ... <payload_type_n>",
-    // the regex matches <port> and the PayloadTypes.
-    var matches = mLine.match(/([0-9]+)/g);
-  
-    // This should not happen, but in case there are no PayloadTypes in
-    // the m= line, return an empty array.
-    if (!matches) {
-      return [];
-    }
-  
-    // Since only the PayloadTypes are needed, we discard the <port>.
-    return matches.slice(1).map(function (match) {
-      return parseInt(match, 10);
-    });
-  }
-  
-  module.exports = { setCodecPreferences: setCodecPreferences };
-  },{"../util":29}],23:[function(require,module,exports){
-  'use strict';
-  
+  },{"../util":27,"rtcpeerconnection-shim":48}],21:[function(require,module,exports){
   /* eslint-disable no-fallthrough */
   var MockRTCStatsReport = require('./mockrtcstatsreport');
-  
   var ERROR_PEER_CONNECTION_NULL = 'PeerConnection is null';
   var ERROR_WEB_RTC_UNSUPPORTED = 'WebRTC statistics are unsupported';
-  
+  var SIGNED_SHORT = 32767;
+  // (rrowland) Only needed to detect Chrome so we can force using legacy stats until standard
+  // stats are fixed in Chrome.
+  var isChrome = false;
+  if (typeof window !== 'undefined') {
+      var isCriOS = !!window.navigator.userAgent.match('CriOS');
+      var isElectron = !!window.navigator.userAgent.match('Electron');
+      var isGoogle = typeof window.chrome !== 'undefined'
+          && window.navigator.vendor === 'Google Inc.'
+          && window.navigator.userAgent.indexOf('OPR') === -1
+          && window.navigator.userAgent.indexOf('Edge') === -1;
+      isChrome = isCriOS || isElectron || isGoogle;
+  }
   /**
    * @typedef {Object} StatsOptions
    * Used for testing to inject and extract methods.
@@ -5889,30 +4839,30 @@ This software includes backoff under the following (MIT) license.
    * @return {Promise<RTCSample>} Universally-formatted version of RTC stats.
    */
   function getStatistics(peerConnection, options) {
-    options = Object.assign({
-      createRTCSample: createRTCSample
-    }, options);
-  
-    if (!peerConnection) {
-      return Promise.reject(new Error(ERROR_PEER_CONNECTION_NULL));
-    }
-  
-    if (typeof peerConnection.getStats !== 'function') {
-      return Promise.reject(new Error(ERROR_WEB_RTC_UNSUPPORTED));
-    }
-  
-    var promise = void 0;
-    try {
-      promise = peerConnection.getStats();
-    } catch (e) {
-      promise = new Promise(function (resolve) {
-        return peerConnection.getStats(resolve);
-      }).then(MockRTCStatsReport.fromRTCStatsResponse);
-    }
-  
-    return promise.then(options.createRTCSample);
+      options = Object.assign({
+          createRTCSample: createRTCSample
+      }, options);
+      if (!peerConnection) {
+          return Promise.reject(new Error(ERROR_PEER_CONNECTION_NULL));
+      }
+      if (typeof peerConnection.getStats !== 'function') {
+          return Promise.reject(new Error(ERROR_WEB_RTC_UNSUPPORTED));
+      }
+      // (rrowland) Force using legacy stats on Chrome until audioLevel of the outbound
+      // audio track is no longer constantly zero.
+      if (isChrome) {
+          return new Promise(function (resolve, reject) { return peerConnection.getStats(resolve, reject); }).then(MockRTCStatsReport.fromRTCStatsResponse)
+              .then(options.createRTCSample);
+      }
+      var promise;
+      try {
+          promise = peerConnection.getStats();
+      }
+      catch (e) {
+          promise = new Promise(function (resolve, reject) { return peerConnection.getStats(resolve, reject); }).then(MockRTCStatsReport.fromRTCStatsResponse);
+      }
+      return promise.then(options.createRTCSample);
   }
-  
   /**
    * @typedef {Object} RTCSample - A sample containing relevant WebRTC stats information.
    * @property {Number} [timestamp]
@@ -5926,9 +4876,10 @@ This software includes backoff under the following (MIT) license.
    * @property {Number} [bytesSent]
    * @property {Number} [localAddress]
    * @property {Number} [remoteAddress]
+   * @property {Number} [audioInputLevel] - Between 0 and 32767
+   * @property {Number} [audioOutputLevel] - Between 0 and 32767
    */
-  function RTCSample() {}
-  
+  function RTCSample() { }
   /**
    * Create an RTCSample object from an RTCStatsReport
    * @private
@@ -5936,90 +4887,68 @@ This software includes backoff under the following (MIT) license.
    * @returns {RTCSample}
    */
   function createRTCSample(statsReport) {
-    var activeTransportId = null;
-    var sample = new RTCSample();
-    var fallbackTimestamp = void 0;
-  
-    Array.from(statsReport.values()).forEach(function (stats) {
-      // Skip isRemote tracks which will be phased out completely and break in FF66.
-      if (stats.isRemote) {
-        return;
-      }
-  
-      // Firefox hack -- Older firefox doesn't have dashes in type names
-      var type = stats.type.replace('-', '');
-  
-      fallbackTimestamp = fallbackTimestamp || stats.timestamp;
-  
-      // (rrowland) As I understand it, this is supposed to come in on remote-inbound-rtp but it's
-      // currently coming in on remote-outbound-rtp, so I'm leaving this outside the switch until
-      // the appropriate place to look is cleared up.
-      if (stats.remoteId) {
-        var remote = statsReport.get(stats.remoteId);
-        if (remote && remote.roundTripTime) {
-          sample.rtt = remote.roundTripTime;
-        }
-      }
-  
-      switch (type) {
-        case 'inboundrtp':
-          sample.timestamp = sample.timestamp || stats.timestamp;
-          sample.jitter = stats.jitter * 1000;
-          sample.packetsLost = stats.packetsLost;
-          sample.packetsReceived = stats.packetsReceived;
-          sample.bytesReceived = stats.bytesReceived;
-  
-          break;
-        case 'outboundrtp':
-          sample.timestamp = stats.timestamp;
-          sample.packetsSent = stats.packetsSent;
-          sample.bytesSent = stats.bytesSent;
-  
-          if (stats.codecId) {
-            var codec = statsReport.get(stats.codecId);
-            sample.codecName = codec ? codec.mimeType && codec.mimeType.match(/(.*\/)?(.*)/)[2] : stats.codecId;
+      var activeTransportId = null;
+      var sample = new RTCSample();
+      var fallbackTimestamp;
+      Array.from(statsReport.values()).forEach(function (stats) {
+          // Firefox hack -- Firefox doesn't have dashes in type names
+          var type = stats.type.replace('-', '');
+          fallbackTimestamp = fallbackTimestamp || stats.timestamp;
+          switch (type) {
+              case 'inboundrtp':
+                  sample.timestamp = sample.timestamp || stats.timestamp;
+                  sample.jitter = stats.jitter * 1000;
+                  sample.packetsLost = stats.packetsLost;
+                  sample.packetsReceived = stats.packetsReceived;
+                  sample.bytesReceived = stats.bytesReceived;
+                  var inboundTrack = statsReport.get(stats.trackId);
+                  if (inboundTrack) {
+                      sample.audioOutputLevel = inboundTrack.audioLevel * SIGNED_SHORT;
+                  }
+                  break;
+              case 'outboundrtp':
+                  sample.timestamp = stats.timestamp;
+                  sample.packetsSent = stats.packetsSent;
+                  sample.bytesSent = stats.bytesSent;
+                  if (stats.codecId && statsReport.get(stats.codecId)) {
+                      var mimeType = statsReport.get(stats.codecId).mimeType;
+                      sample.codecName = mimeType && mimeType.match(/(.*\/)?(.*)/)[2];
+                  }
+                  var outboundTrack = statsReport.get(stats.trackId);
+                  if (outboundTrack) {
+                      sample.audioInputLevel = outboundTrack.audioLevel * SIGNED_SHORT;
+                  }
+                  break;
+              case 'transport':
+                  if (stats.dtlsState === 'connected') {
+                      activeTransportId = stats.id;
+                  }
+                  break;
           }
-  
-          break;
-        case 'transport':
-          if (stats.dtlsState === 'connected') {
-            activeTransportId = stats.id;
-          }
-          break;
+      });
+      if (!sample.timestamp) {
+          sample.timestamp = fallbackTimestamp;
       }
-    });
-  
-    if (!sample.timestamp) {
-      sample.timestamp = fallbackTimestamp;
-    }
-  
-    var activeTransport = statsReport.get(activeTransportId);
-    if (!activeTransport) {
+      var activeTransport = statsReport.get(activeTransportId);
+      if (!activeTransport) {
+          return sample;
+      }
+      var selectedCandidatePair = statsReport.get(activeTransport.selectedCandidatePairId);
+      if (!selectedCandidatePair) {
+          return sample;
+      }
+      var localCandidate = statsReport.get(selectedCandidatePair.localCandidateId);
+      var remoteCandidate = statsReport.get(selectedCandidatePair.remoteCandidateId);
+      Object.assign(sample, {
+          localAddress: localCandidate && localCandidate.ip,
+          remoteAddress: remoteCandidate && remoteCandidate.ip,
+          rtt: selectedCandidatePair && (selectedCandidatePair.currentRoundTripTime * 1000)
+      });
       return sample;
-    }
-  
-    var selectedCandidatePair = statsReport.get(activeTransport.selectedCandidatePairId);
-    if (!selectedCandidatePair) {
-      return sample;
-    }
-  
-    var localCandidate = statsReport.get(selectedCandidatePair.localCandidateId);
-    var remoteCandidate = statsReport.get(selectedCandidatePair.remoteCandidateId);
-  
-    if (!sample.rtt) {
-      sample.rtt = selectedCandidatePair && selectedCandidatePair.currentRoundTripTime * 1000;
-    }
-  
-    Object.assign(sample, {
-      localAddress: localCandidate && localCandidate.ip,
-      remoteAddress: remoteCandidate && remoteCandidate.ip
-    });
-  
-    return sample;
   }
-  
   module.exports = getStatistics;
-  },{"./mockrtcstatsreport":17}],24:[function(require,module,exports){
+  
+  },{"./mockrtcstatsreport":16}],22:[function(require,module,exports){
   var EventEmitter = require('events').EventEmitter;
   function EventTarget() {
       Object.defineProperties(this, {
@@ -6066,40 +4995,18 @@ This software includes backoff under the following (MIT) license.
   };
   module.exports = EventTarget;
   
-  },{"events":42}],25:[function(require,module,exports){
-  "use strict";
-  
-  function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
-  
-  var MediaDeviceInfoShim = function MediaDeviceInfoShim(options) {
-    _classCallCheck(this, MediaDeviceInfoShim);
-  
-    Object.defineProperties(this, {
-      deviceId: {
-        get: function get() {
-          return options.deviceId;
-        }
-      },
-      groupId: {
-        get: function get() {
-          return options.groupId;
-        }
-      },
-      kind: {
-        get: function get() {
-          return options.kind;
-        }
-      },
-      label: {
-        get: function get() {
-          return options.label;
-        }
-      }
-    });
-  };
-  
+  },{"events":40}],23:[function(require,module,exports){
+  function MediaDeviceInfoShim(options) {
+      Object.defineProperties(this, {
+          deviceId: { get: function () { return options.deviceId; } },
+          groupId: { get: function () { return options.groupId; } },
+          kind: { get: function () { return options.kind; } },
+          label: { get: function () { return options.label; } },
+      });
+  }
   module.exports = MediaDeviceInfoShim;
-  },{}],26:[function(require,module,exports){
+  
+  },{}],24:[function(require,module,exports){
   var EventTarget = require('./eventtarget');
   var inherits = require('util').inherits;
   var POLL_INTERVAL_MS = 500;
@@ -6244,11 +5151,8 @@ This software includes backoff under the following (MIT) license.
       return nativeMediaDevices ? new MediaDevicesShim() : null;
   })();
   
-  },{"./eventtarget":24,"util":53}],27:[function(require,module,exports){
-  'use strict';
-  
+  },{"./eventtarget":22,"util":51}],25:[function(require,module,exports){
   var AudioPlayer = require('@twilio/audioplayer');
-  
   /**
    * @class
    * @param {string} name - Name of the sound
@@ -6259,178 +5163,158 @@ This software includes backoff under the following (MIT) license.
    * @property {string} url - URL of the sound
    * @property {AudioContext} audioContext - The AudioContext to use if available for AudioPlayer.
    */ /**
-      * @typedef {Object} Sound#ConstructorOptions
-      * @property {number} [maxDuration=0] - The maximum length of time to play the sound
-      *   before stopping it.
-      * @property {Boolean} [shouldLoop=false] - Whether the sound should be looped.
-      */
+  * @typedef {Object} Sound#ConstructorOptions
+  * @property {number} [maxDuration=0] - The maximum length of time to play the sound
+  *   before stopping it.
+  * @property {Boolean} [shouldLoop=false] - Whether the sound should be looped.
+  */
   function Sound(name, url, options) {
-    if (!(this instanceof Sound)) {
-      return new Sound(name, url, options);
-    }
-  
-    if (!name || !url) {
-      throw new Error('name and url are required arguments');
-    }
-  
-    options = Object.assign({
-      AudioFactory: typeof Audio !== 'undefined' ? Audio : null,
-      maxDuration: 0,
-      shouldLoop: false
-    }, options);
-  
-    options.AudioPlayer = options.audioContext ? AudioPlayer.bind(AudioPlayer, options.audioContext) : options.AudioFactory;
-  
-    Object.defineProperties(this, {
-      _activeEls: {
-        value: new Set()
-      },
-      _Audio: {
-        value: options.AudioPlayer
-      },
-      _isSinkSupported: {
-        value: options.AudioFactory !== null && typeof options.AudioFactory.prototype.setSinkId === 'function'
-      },
-      _maxDuration: {
-        value: options.maxDuration
-      },
-      _maxDurationTimeout: {
-        value: null,
-        writable: true
-      },
-      _playPromise: {
-        value: null,
-        writable: true
-      },
-      _shouldLoop: {
-        value: options.shouldLoop
-      },
-      _sinkIds: {
-        value: ['default']
-      },
-      isPlaying: {
-        enumerable: true,
-        get: function get() {
-          return !!this._playPromise;
-        }
-      },
-      name: {
-        enumerable: true,
-        value: name
-      },
-      url: {
-        enumerable: true,
-        value: url
+      if (!(this instanceof Sound)) {
+          return new Sound(name, url, options);
       }
-    });
-  
-    if (this._Audio) {
-      preload(this._Audio, url);
-    }
+      if (!name || !url) {
+          throw new Error('name and url are required arguments');
+      }
+      options = Object.assign({
+          AudioFactory: typeof Audio !== 'undefined' ? Audio : null,
+          maxDuration: 0,
+          shouldLoop: false
+      }, options);
+      options.AudioPlayer = options.audioContext
+          ? AudioPlayer.bind(AudioPlayer, options.audioContext)
+          : options.AudioFactory;
+      Object.defineProperties(this, {
+          _activeEls: {
+              value: new Set()
+          },
+          _Audio: {
+              value: options.AudioPlayer
+          },
+          _isSinkSupported: {
+              value: options.AudioFactory !== null
+                  && typeof options.AudioFactory.prototype.setSinkId === 'function'
+          },
+          _maxDuration: {
+              value: options.maxDuration
+          },
+          _maxDurationTimeout: {
+              value: null,
+              writable: true
+          },
+          _playPromise: {
+              value: null,
+              writable: true
+          },
+          _shouldLoop: {
+              value: options.shouldLoop
+          },
+          _sinkIds: {
+              value: ['default']
+          },
+          isPlaying: {
+              enumerable: true,
+              get: function () {
+                  return !!this._playPromise;
+              }
+          },
+          name: {
+              enumerable: true,
+              value: name
+          },
+          url: {
+              enumerable: true,
+              value: url
+          }
+      });
+      if (this._Audio) {
+          preload(this._Audio, url);
+      }
   }
-  
   function preload(AudioFactory, url) {
-    var el = new AudioFactory(url);
-    el.preload = 'auto';
-    el.muted = true;
-  
-    // Play it (muted) as soon as possible so that it does not get incorrectly caught by Chrome's
-    // "gesture requirement for media playback" feature.
-    // https://plus.google.com/+FrancoisBeaufort/posts/6PiJQqJzGqX
-    el.play();
+      var el = new AudioFactory(url);
+      el.preload = 'auto';
+      el.muted = true;
+      // Play it (muted) as soon as possible so that it does not get incorrectly caught by Chrome's
+      // "gesture requirement for media playback" feature.
+      // https://plus.google.com/+FrancoisBeaufort/posts/6PiJQqJzGqX
+      el.play();
   }
-  
   /**
    * Update the sinkIds of the audio output devices this sound should play through.
    */
   Sound.prototype.setSinkIds = function setSinkIds(ids) {
-    if (!this._isSinkSupported) {
-      return;
-    }
-  
-    ids = ids.forEach ? ids : [ids];
-    [].splice.apply(this._sinkIds, [0, this._sinkIds.length].concat(ids));
+      if (!this._isSinkSupported) {
+          return;
+      }
+      ids = ids.forEach ? ids : [ids];
+      [].splice.apply(this._sinkIds, [0, this._sinkIds.length].concat(ids));
   };
-  
   /**
    * Stop playing the sound.
    * @return {void}
    */
   Sound.prototype.stop = function stop() {
-    this._activeEls.forEach(function (audioEl) {
-      audioEl.pause();
-      audioEl.src = '';
-      audioEl.load();
-    });
-  
-    this._activeEls.clear();
-  
-    clearTimeout(this._maxDurationTimeout);
-  
-    this._playPromise = null;
-    this._maxDurationTimeout = null;
+      this._activeEls.forEach(function (audioEl) {
+          audioEl.pause();
+          audioEl.src = '';
+          audioEl.load();
+      });
+      this._activeEls.clear();
+      clearTimeout(this._maxDurationTimeout);
+      this._playPromise = null;
+      this._maxDurationTimeout = null;
   };
-  
   /**
    * Start playing the sound. Will stop the currently playing sound first.
    */
   Sound.prototype.play = function play() {
-    if (this.isPlaying) {
-      this.stop();
-    }
-  
-    if (this._maxDuration > 0) {
-      this._maxDurationTimeout = setTimeout(this.stop.bind(this), this._maxDuration);
-    }
-  
-    var self = this;
-    var playPromise = this._playPromise = Promise.all(this._sinkIds.map(function createAudioElement(sinkId) {
-      if (!self._Audio) {
-        return Promise.resolve();
+      if (this.isPlaying) {
+          this.stop();
       }
-  
-      var audioElement = new self._Audio(self.url);
-      audioElement.loop = self._shouldLoop;
-  
-      audioElement.addEventListener('ended', function () {
-        self._activeEls.delete(audioElement);
-      });
-  
-      /**
-       * (rrowland) Bug in Chrome 53 & 54 prevents us from calling Audio.setSinkId without
-       *   crashing the tab. https://bugs.chromium.org/p/chromium/issues/detail?id=655342
-       */
-      return new Promise(function (resolve) {
-        audioElement.addEventListener('canplaythrough', resolve);
-      }).then(function () {
-        // If stop has already been called, or another play has been initiated,
-        // bail out before setting up the element to play.
-        if (!self.isPlaying || self._playPromise !== playPromise) {
-          return Promise.resolve();
-        }
-  
-        return (self._isSinkSupported ? audioElement.setSinkId(sinkId) : Promise.resolve()).then(function setSinkIdSuccess() {
-          self._activeEls.add(audioElement);
-          return audioElement.play();
-        }).then(function playSuccess() {
-          return audioElement;
-        }, function playFailure(reason) {
-          self._activeEls.delete(audioElement);
-          throw reason;
-        });
-      });
-    }));
-  
-    return playPromise;
+      if (this._maxDuration > 0) {
+          this._maxDurationTimeout = setTimeout(this.stop.bind(this), this._maxDuration);
+      }
+      var self = this;
+      var playPromise = this._playPromise = Promise.all(this._sinkIds.map(function createAudioElement(sinkId) {
+          if (!self._Audio) {
+              return Promise.resolve();
+          }
+          var audioElement = new self._Audio(self.url);
+          audioElement.loop = self._shouldLoop;
+          audioElement.addEventListener('ended', function () {
+              self._activeEls.delete(audioElement);
+          });
+          /**
+           * (rrowland) Bug in Chrome 53 & 54 prevents us from calling Audio.setSinkId without
+           *   crashing the tab. https://bugs.chromium.org/p/chromium/issues/detail?id=655342
+           */
+          return new Promise(function (resolve) {
+              audioElement.addEventListener('canplaythrough', resolve);
+          }).then(function () {
+              // If stop has already been called, or another play has been initiated,
+              // bail out before setting up the element to play.
+              if (!self.isPlaying || self._playPromise !== playPromise) {
+                  return Promise.resolve();
+              }
+              return (self._isSinkSupported
+                  ? audioElement.setSinkId(sinkId)
+                  : Promise.resolve()).then(function setSinkIdSuccess() {
+                  self._activeEls.add(audioElement);
+                  return audioElement.play();
+              }).then(function playSuccess() {
+                  return audioElement;
+              }, function playFailure(reason) {
+                  self._activeEls.delete(audioElement);
+                  throw reason;
+              });
+          });
+      }));
+      return playPromise;
   };
-  
   module.exports = Sound;
-  },{"@twilio/audioplayer":34}],28:[function(require,module,exports){
+  
+  },{"@twilio/audioplayer":32}],26:[function(require,module,exports){
   "use strict";
-  /**
-   * @module Tools
-   * @internalapi
-   */
   Object.defineProperty(exports, "__esModule", { value: true });
   /**
    * Valid LogLevels.
@@ -6462,9 +5346,6 @@ This software includes backoff under the following (MIT) license.
       _b[LogLevel.Error] = 3,
       _b[LogLevel.Off] = 4,
       _b);
-  /**
-   * @internalapi
-   */
   var Log = /** @class */ (function () {
       /**
        * @param logLevel - The initial LogLevel threshold to display logs for.
@@ -6559,7 +5440,7 @@ This software includes backoff under the following (MIT) license.
   exports.default = Log;
   var _a, _b;
   
-  },{}],29:[function(require,module,exports){
+  },{}],27:[function(require,module,exports){
   (function (global){
   /**
    * Exception class.
@@ -6584,123 +5465,34 @@ This software includes backoff under the following (MIT) license.
       return "Twilio.Exception: " + this.message;
   };
   function average(values) {
-      return values && values.length ? values.reduce(function (t, v) { return t + v; }) / values.length : 0;
+      return values.reduce(function (t, v) { return t + v; }) / values.length;
   }
   function difference(lefts, rights, getKey) {
       getKey = getKey || (function (a) { return a; });
       var rightKeys = new Set(rights.map(getKey));
       return lefts.filter(function (left) { return !rightKeys.has(getKey(left)); });
   }
-  function isElectron(navigator) {
-      return !!navigator.userAgent.match('Electron');
-  }
-  function isChrome(window, navigator) {
-      var isCriOS = !!navigator.userAgent.match('CriOS');
-      var isGoogle = typeof window.chrome !== 'undefined'
-          && navigator.vendor === 'Google Inc.'
-          && navigator.userAgent.indexOf('OPR') === -1
-          && navigator.userAgent.indexOf('Edge') === -1;
-      return isCriOS || isElectron(navigator) || isGoogle;
-  }
   function isFirefox(navigator) {
       navigator = navigator || (typeof window === 'undefined'
           ? global.navigator : window.navigator);
-      return !!(navigator) && typeof navigator.userAgent === 'string'
+      return navigator && typeof navigator.userAgent === 'string'
           && /firefox|fxios/i.test(navigator.userAgent);
   }
   function isEdge(navigator) {
       navigator = navigator || (typeof window === 'undefined'
           ? global.navigator : window.navigator);
-      return !!(navigator) && typeof navigator.userAgent === 'string'
+      return navigator && typeof navigator.userAgent === 'string'
           && /edge\/\d+/i.test(navigator.userAgent);
-  }
-  function isSafari(navigator) {
-      return !!(navigator.vendor) && navigator.vendor.indexOf('Apple') !== -1
-          && navigator.userAgent
-          && navigator.userAgent.indexOf('CriOS') === -1
-          && navigator.userAgent.indexOf('FxiOS') === -1;
-  }
-  function isUnifiedPlanDefault(window, navigator, PeerConnection, RtpTransceiver) {
-      if (typeof window === 'undefined'
-          || typeof navigator === 'undefined'
-          || typeof PeerConnection === 'undefined'
-          || typeof RtpTransceiver === 'undefined'
-          || typeof PeerConnection.prototype === 'undefined'
-          || typeof RtpTransceiver.prototype === 'undefined') {
-          return false;
-      }
-      if (isChrome(window, navigator) && PeerConnection.prototype.addTransceiver) {
-          var pc = new PeerConnection();
-          var isUnifiedPlan = true;
-          try {
-              pc.addTransceiver('audio');
-          }
-          catch (e) {
-              isUnifiedPlan = false;
-          }
-          pc.close();
-          return isUnifiedPlan;
-      }
-      else if (isFirefox(navigator)) {
-          return true;
-      }
-      else if (isSafari(navigator)) {
-          return 'currentDirection' in RtpTransceiver.prototype;
-      }
-      // Edge currently does not support unified plan.
-      // https://developer.microsoft.com/en-us/microsoft-edge/platform/issues/17733189/
-      // https://wpdev.uservoice.com/forums/257854-microsoft-edge-developer/suggestions/34451998-sdp-unified-plan
-      return false;
-  }
-  function queryToJson(params) {
-      if (!params) {
-          return '';
-      }
-      return params.split('&').reduce(function (output, pair) {
-          var parts = pair.split('=');
-          var key = parts[0];
-          var value = decodeURIComponent((parts[1] || '').replace(/\+/g, '%20'));
-          if (key) {
-              output[key] = value;
-          }
-          return output;
-      }, {});
-  }
-  /**
-   * Map a list to an array of arrays, and return the flattened result.
-   * @param {Array<*>|Set<*>|Map<*>} list
-   * @param {function(*): Array<*>} [mapFn]
-   * @returns Array<*>
-   */
-  function flatMap(list, mapFn) {
-      var listArray = list instanceof Map || list instanceof Set
-          ? Array.from(list.values())
-          : list;
-      mapFn = mapFn || (function (item) { return item; });
-      return listArray.reduce(function (flattened, item) {
-          var mapped = mapFn(item);
-          return flattened.concat(mapped);
-      }, []);
   }
   exports.Exception = TwilioException;
   exports.average = average;
   exports.difference = difference;
-  exports.isElectron = isElectron;
-  exports.isChrome = isChrome;
   exports.isFirefox = isFirefox;
   exports.isEdge = isEdge;
-  exports.isSafari = isSafari;
-  exports.isUnifiedPlanDefault = isUnifiedPlanDefault;
-  exports.queryToJson = queryToJson;
-  exports.flatMap = flatMap;
   
   }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-  },{}],30:[function(require,module,exports){
+  },{}],28:[function(require,module,exports){
   "use strict";
-  /**
-   * @module Tools
-   * @internalapi
-   */
   var __extends = (this && this.__extends) || (function () {
       var extendStatics = Object.setPrototypeOf ||
           ({ __proto__: [] } instanceof Array && function (d, b) { d.__proto__ = b; }) ||
@@ -6756,6 +5548,15 @@ This software includes backoff under the following (MIT) license.
            */
           _this.state = WSTransportState.Closed;
           /**
+           * The backoff instance used to schedule reconnection attempts.
+           */
+          _this._backoff = Backoff.exponential({
+              factor: 1.5,
+              initialDelay: 30,
+              maxDelay: 3000,
+              randomisationFactor: 0.25,
+          });
+          /**
            * Called in response to WebSocket#close event.
            */
           _this._onSocketClose = function () {
@@ -6793,14 +5594,6 @@ This software includes backoff under the following (MIT) license.
               _this._setHeartbeatTimeout();
               _this.emit('open');
           };
-          _this._backoff = Backoff.exponential({
-              factor: 2.0,
-              initialDelay: 100,
-              maxDelay: typeof options.backoffMaxMs === 'number'
-                  ? Math.max(options.backoffMaxMs, 3000)
-                  : 20000,
-              randomisationFactor: 0.40,
-          });
           _this._log = new tslog_1.default(options.logLevel || tslog_1.LogLevel.Off);
           _this._uri = uri;
           _this._WebSocket = options.WebSocket || WebSocket;
@@ -6948,7 +5741,7 @@ This software includes backoff under the following (MIT) license.
   }(events_1.EventEmitter));
   exports.default = WSTransport;
   
-  },{"./tslog":28,"backoff":36,"events":42,"ws":1}],31:[function(require,module,exports){
+  },{"./tslog":26,"backoff":34,"events":40,"ws":1}],29:[function(require,module,exports){
   "use strict";
   
   var _regenerator = require("babel-runtime/regenerator");
@@ -7145,16 +5938,13 @@ This software includes backoff under the following (MIT) license.
                                   this._audioNode.start();
   
                                   if (!this._audioElement.srcObject) {
-                                      _context.next = 20;
+                                      _context.next = 19;
                                       break;
                                   }
   
-                                  this.addEventListener('ended', function () {
-                                      _this2._audioElement.srcObject = null;
-                                  });
                                   return _context.abrupt("return", this._audioElement.play());
   
-                              case 20:
+                              case 19:
                               case "end":
                                   return _context.stop();
                           }
@@ -7432,7 +6222,7 @@ This software includes backoff under the following (MIT) license.
       }));
   }
   
-  },{"./Deferred":32,"./EventTarget":33,"babel-runtime/regenerator":35}],32:[function(require,module,exports){
+  },{"./Deferred":30,"./EventTarget":31,"babel-runtime/regenerator":33}],30:[function(require,module,exports){
   "use strict";
   
   var _createClass = function () { function defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ("value" in descriptor) descriptor.writable = true; Object.defineProperty(target, descriptor.key, descriptor); } } return function (Constructor, protoProps, staticProps) { if (protoProps) defineProperties(Constructor.prototype, protoProps); if (staticProps) defineProperties(Constructor, staticProps); return Constructor; }; }();
@@ -7470,7 +6260,7 @@ This software includes backoff under the following (MIT) license.
   
   exports.default = Deferred;
   
-  },{}],33:[function(require,module,exports){
+  },{}],31:[function(require,module,exports){
   "use strict";
   
   var _createClass = function () { function defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ("value" in descriptor) descriptor.writable = true; Object.defineProperty(target, descriptor.key, descriptor); } } return function (Constructor, protoProps, staticProps) { if (protoProps) defineProperties(Constructor.prototype, protoProps); if (staticProps) defineProperties(Constructor, staticProps); return Constructor; }; }();
@@ -7515,16 +6305,16 @@ This software includes backoff under the following (MIT) license.
   
   exports.default = EventTarget;
   
-  },{"events":42}],34:[function(require,module,exports){
+  },{"events":40}],32:[function(require,module,exports){
   'use strict';
   
   var AudioPlayer = require('./AudioPlayer');
   
   module.exports = AudioPlayer.default;
-  },{"./AudioPlayer":31}],35:[function(require,module,exports){
+  },{"./AudioPlayer":29}],33:[function(require,module,exports){
   module.exports = require("regenerator-runtime");
   
-  },{"regenerator-runtime":47}],36:[function(require,module,exports){
+  },{"regenerator-runtime":46}],34:[function(require,module,exports){
   //      Copyright (c) 2012 Mathieu Turcotte
   //      Licensed under the MIT license.
   
@@ -7557,7 +6347,7 @@ This software includes backoff under the following (MIT) license.
       return new FunctionCall(fn, vargs, callback);
   };
   
-  },{"./lib/backoff":37,"./lib/function_call.js":38,"./lib/strategy/exponential":39,"./lib/strategy/fibonacci":40}],37:[function(require,module,exports){
+  },{"./lib/backoff":35,"./lib/function_call.js":36,"./lib/strategy/exponential":37,"./lib/strategy/fibonacci":38}],35:[function(require,module,exports){
   //      Copyright (c) 2012 Mathieu Turcotte
   //      Licensed under the MIT license.
   
@@ -7624,7 +6414,7 @@ This software includes backoff under the following (MIT) license.
   
   module.exports = Backoff;
   
-  },{"events":42,"precond":43,"util":53}],38:[function(require,module,exports){
+  },{"events":40,"precond":42,"util":51}],36:[function(require,module,exports){
   //      Copyright (c) 2012 Mathieu Turcotte
   //      Licensed under the MIT license.
   
@@ -7816,7 +6606,7 @@ This software includes backoff under the following (MIT) license.
   
   module.exports = FunctionCall;
   
-  },{"./backoff":37,"./strategy/fibonacci":40,"events":42,"precond":43,"util":53}],39:[function(require,module,exports){
+  },{"./backoff":35,"./strategy/fibonacci":38,"events":40,"precond":42,"util":51}],37:[function(require,module,exports){
   //      Copyright (c) 2012 Mathieu Turcotte
   //      Licensed under the MIT license.
   
@@ -7859,7 +6649,7 @@ This software includes backoff under the following (MIT) license.
   
   module.exports = ExponentialBackoffStrategy;
   
-  },{"./strategy":41,"precond":43,"util":53}],40:[function(require,module,exports){
+  },{"./strategy":39,"precond":42,"util":51}],38:[function(require,module,exports){
   //      Copyright (c) 2012 Mathieu Turcotte
   //      Licensed under the MIT license.
   
@@ -7889,7 +6679,7 @@ This software includes backoff under the following (MIT) license.
   
   module.exports = FibonacciBackoffStrategy;
   
-  },{"./strategy":41,"util":53}],41:[function(require,module,exports){
+  },{"./strategy":39,"util":51}],39:[function(require,module,exports){
   //      Copyright (c) 2012 Mathieu Turcotte
   //      Licensed under the MIT license.
   
@@ -7971,7 +6761,7 @@ This software includes backoff under the following (MIT) license.
   
   module.exports = BackoffStrategy;
   
-  },{"events":42,"util":53}],42:[function(require,module,exports){
+  },{"events":40,"util":51}],40:[function(require,module,exports){
   // Copyright Joyent, Inc. and other Node contributors.
   //
   // Permission is hereby granted, free of charge, to any person obtaining a
@@ -8496,14 +7286,39 @@ This software includes backoff under the following (MIT) license.
     };
   }
   
-  },{}],43:[function(require,module,exports){
+  },{}],41:[function(require,module,exports){
+  if (typeof Object.create === 'function') {
+    // implementation from standard node.js 'util' module
+    module.exports = function inherits(ctor, superCtor) {
+      ctor.super_ = superCtor
+      ctor.prototype = Object.create(superCtor.prototype, {
+        constructor: {
+          value: ctor,
+          enumerable: false,
+          writable: true,
+          configurable: true
+        }
+      });
+    };
+  } else {
+    // old school shim for old browsers
+    module.exports = function inherits(ctor, superCtor) {
+      ctor.super_ = superCtor
+      var TempCtor = function () {}
+      TempCtor.prototype = superCtor.prototype
+      ctor.prototype = new TempCtor()
+      ctor.prototype.constructor = ctor
+    }
+  }
+  
+  },{}],42:[function(require,module,exports){
   /*
    * Copyright (c) 2012 Mathieu Turcotte
    * Licensed under the MIT license.
    */
   
   module.exports = require('./lib/checks');
-  },{"./lib/checks":44}],44:[function(require,module,exports){
+  },{"./lib/checks":43}],43:[function(require,module,exports){
   /*
    * Copyright (c) 2012 Mathieu Turcotte
    * Licensed under the MIT license.
@@ -8599,7 +7414,7 @@ This software includes backoff under the following (MIT) license.
   module.exports.checkIsFunction = typeCheck('function');
   module.exports.checkIsObject = typeCheck('object');
   
-  },{"./errors":45,"util":53}],45:[function(require,module,exports){
+  },{"./errors":44,"util":51}],44:[function(require,module,exports){
   /*
    * Copyright (c) 2012 Mathieu Turcotte
    * Licensed under the MIT license.
@@ -8625,7 +7440,7 @@ This software includes backoff under the following (MIT) license.
   
   module.exports.IllegalStateError = IllegalStateError;
   module.exports.IllegalArgumentError = IllegalArgumentError;
-  },{"util":53}],46:[function(require,module,exports){
+  },{"util":51}],45:[function(require,module,exports){
   // shim for using process in browser
   var process = module.exports = {};
   
@@ -8811,7 +7626,7 @@ This software includes backoff under the following (MIT) license.
   };
   process.umask = function() { return 0; };
   
-  },{}],47:[function(require,module,exports){
+  },{}],46:[function(require,module,exports){
   /**
    * Copyright (c) 2014-present, Facebook, Inc.
    *
@@ -8848,7 +7663,7 @@ This software includes backoff under the following (MIT) license.
     }
   }
   
-  },{"./runtime":48}],48:[function(require,module,exports){
+  },{"./runtime":47}],47:[function(require,module,exports){
   /**
    * Copyright (c) 2014-present, Facebook, Inc.
    *
@@ -9577,7 +8392,7 @@ This software includes backoff under the following (MIT) license.
     (function() { return this })() || Function("return this")()
   );
   
-  },{}],49:[function(require,module,exports){
+  },{}],48:[function(require,module,exports){
   /*
    *  Copyright (c) 2017 The WebRTC project authors. All Rights Reserved.
    *
@@ -11273,7 +10088,7 @@ This software includes backoff under the following (MIT) license.
     return RTCPeerConnection;
   };
   
-  },{"sdp":50}],50:[function(require,module,exports){
+  },{"sdp":49}],49:[function(require,module,exports){
    /* eslint-env node */
   'use strict';
   
@@ -11986,39 +10801,14 @@ This software includes backoff under the following (MIT) license.
     module.exports = SDPUtils;
   }
   
-  },{}],51:[function(require,module,exports){
-  if (typeof Object.create === 'function') {
-    // implementation from standard node.js 'util' module
-    module.exports = function inherits(ctor, superCtor) {
-      ctor.super_ = superCtor
-      ctor.prototype = Object.create(superCtor.prototype, {
-        constructor: {
-          value: ctor,
-          enumerable: false,
-          writable: true,
-          configurable: true
-        }
-      });
-    };
-  } else {
-    // old school shim for old browsers
-    module.exports = function inherits(ctor, superCtor) {
-      ctor.super_ = superCtor
-      var TempCtor = function () {}
-      TempCtor.prototype = superCtor.prototype
-      ctor.prototype = new TempCtor()
-      ctor.prototype.constructor = ctor
-    }
-  }
-  
-  },{}],52:[function(require,module,exports){
+  },{}],50:[function(require,module,exports){
   module.exports = function isBuffer(arg) {
     return arg && typeof arg === 'object'
       && typeof arg.copy === 'function'
       && typeof arg.fill === 'function'
       && typeof arg.readUInt8 === 'function';
   }
-  },{}],53:[function(require,module,exports){
+  },{}],51:[function(require,module,exports){
   (function (process,global){
   // Copyright Joyent, Inc. and other Node contributors.
   //
@@ -12608,45 +11398,35 @@ This software includes backoff under the following (MIT) license.
   }
   
   }).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-  },{"./support/isBuffer":52,"_process":46,"inherits":51}],54:[function(require,module,exports){
+  },{"./support/isBuffer":50,"_process":45,"inherits":41}],52:[function(require,module,exports){
   module.exports={
     "name": "twilio-client",
-    "version": "1.7.6",
+    "version": "1.5.2",
     "description": "Javascript SDK for Twilio Client",
+    "homepage": "https://www.twilio.com/docs/client/twilio-js",
     "main": "./es5/twilio.js",
     "license": "Apache-2.0",
-    "keywords": [
-      "twilio",
-      "client",
-      "voice",
-      "voip"
-    ],
     "repository": {
       "type": "git",
-      "url": "git@github.com:twilio/twilio-client.js.git"
+      "url": "git@code.hq.twilio.com:client/twiliojs.git"
     },
     "scripts": {
-      "build": "npm-run-all clean docs:ts build:es5 build:ts build:dist build:dist-min",
+      "build": "npm-run-all clean docs:ts docs:js build:es5 build:ts build:dist build:dist-min",
       "build:es5": "rimraf ./es5 && babel lib -d es5",
-      "build:dev": "ENV=dev npm run build",
       "build:dist": "node ./scripts/build.js ./lib/browser.js ./LICENSE.md ./dist/twilio.js",
       "build:dist-min": "uglifyjs ./dist/twilio.js -o ./dist/twilio.min.js --comments \"/^! twilio-client.js/\" -b beautify=false,ascii_only=true",
-      "build:release": "npm-run-all lint build test:unit test:integration test:webpack test:es5 status",
+      "build:travis": "npm-run-all lint build test:unit test:webpack test:es5",
       "build:ts": "tsc",
       "clean": "rimraf ./coverage ./dist ./es5",
       "coverage": "nyc ./node_modules/mocha/bin/mocha -r ts-node/register ./tests/index.ts",
-      "coverage:check": "nyc check-coverage --lines 60 --branches 60 --functions 60",
-      "docs:clean": "rimraf ./docs",
       "docs:js": "jsdoc -r -d dist/docs/js lib/twilio",
-      "docs:json": "typedoc --json dist/docs/raw.json --internal-aliases internal,publicapi --external-aliases external,internalapi --excludePrivate --excludeProtected",
-      "docs:ts": "typedoc --out docs --internal-aliases internal,publicapi --external-aliases external,internalapi --excludePrivate --excludeProtected --theme ./node_modules/typedoc-twilio-theme/bin/default",
+      "docs:ts": "typedoc --out dist/docs/ts lib/twilio",
       "extension": "browserify -t brfs extension/token/index.js > extension/token.js",
       "lint": "npm-run-all lint:js lint:ts",
       "lint:js": "eslint lib",
       "lint:ts": "tslint -c tslint.json --project tsconfig.json -t stylish",
       "release": "release",
       "start": "node server.js",
-      "status": "git status",
       "test": "npm-run-all test:unit test:frameworks",
       "test:es5": "es-check es5 \"./es5/**/*.js\" ./dist/*.js",
       "test:framework:no-framework": "mocha tests/framework/no-framework.js",
@@ -12655,16 +11435,10 @@ This software includes backoff under the following (MIT) license.
       "test:framework:react:run": "mocha ./tests/framework/react.js",
       "test:framework:react": "npm-run-all test:framework:react:*",
       "test:frameworks": "npm-run-all test:framework:no-framework test:framework:react",
-      "test:integration": "karma start karma.conf.ts",
       "test:selenium": "mocha tests/browser/index.js",
-      "test:unit": "nyc mocha -r ts-node/register ./tests/index.ts",
+      "test:unit": "mocha --reporter=spec -r ts-node/register ./tests/index.ts",
       "test:webpack": "cd ./tests/webpack && npm install && npm test"
     },
-    "pre-commit": [
-      "lint",
-      "test:unit",
-      "docs:ts"
-    ],
     "devDependencies": {
       "@types/mocha": "5.0.0",
       "@types/node": "9.6.5",
@@ -12685,7 +11459,7 @@ This software includes backoff under the following (MIT) license.
       "eslint-plugin-babel": "4.1.2",
       "express": "4.14.1",
       "geckodriver": "1.8.1",
-      "js-yaml": "3.13.1",
+      "js-yaml": "3.9.1",
       "jsdoc": "3.5.5",
       "jsonwebtoken": "7.4.3",
       "karma": "3.0.0",
@@ -12696,7 +11470,7 @@ This software includes backoff under the following (MIT) license.
       "karma-spec-reporter": "0.0.32",
       "karma-typescript": "3.0.13",
       "karma-typescript-es6-transform": "1.0.4",
-      "lodash": "4.17.14",
+      "lodash": "4.17.4",
       "mocha": "3.5.0",
       "npm-run-all": "4.1.2",
       "nyc": "10.1.2",
@@ -12711,19 +11485,16 @@ This software includes backoff under the following (MIT) license.
       "twilio": "3.17.0",
       "typedoc": "github:ryan-rowland/typedoc#twilio",
       "typedoc-plugin-as-member-of": "1.0.2",
-      "typedoc-plugin-external-module-name": "1.1.3",
-      "typedoc-plugin-internal-external": "1.0.10",
-      "typedoc-twilio-theme": "1.0.0",
       "typescript": "2.8.1",
       "uglify-js": "3.3.11",
       "vinyl-fs": "3.0.2",
       "vinyl-source-stream": "2.0.0"
     },
     "dependencies": {
-      "@twilio/audioplayer": "1.0.4",
+      "@twilio/audioplayer": "1.0.3",
       "backoff": "2.5.0",
       "rtcpeerconnection-shim": "1.2.8",
-      "ws": "6.1.3",
+      "ws": "0.4.31",
       "xmlhttprequest": "1.8.0"
     },
     "browser": {
