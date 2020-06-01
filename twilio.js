@@ -1,4 +1,4 @@
-/*! twilio-client.js 1.10.3
+/*! twilio-client.js 1.11.0
 
 The following license applies to all parts of this software except as
 documented below.
@@ -1960,7 +1960,7 @@ exports.default = Connection;
  * This file is generated on build. To make changes, see /templates/constants.js
  */
 var PACKAGE_NAME = 'twilio-client';
-var RELEASE_VERSION = '1.10.3';
+var RELEASE_VERSION = '1.11.0';
 module.exports.SOUNDS_BASE_URL = 'https://sdk.twilio.com/js/client/sounds/releases/1.0.0';
 module.exports.PACKAGE_NAME = PACKAGE_NAME;
 module.exports.RELEASE_VERSION = RELEASE_VERSION;
@@ -2082,7 +2082,6 @@ var PStream = require('./pstream');
 var rtc = require('./rtc');
 var getUserMedia = require('./rtc/getusermedia');
 var Sound = require('./sound');
-var isUnifiedPlanDefault = require('./util').isUnifiedPlanDefault;
 /**
  * @private
  */
@@ -2129,6 +2128,10 @@ var Device = /** @class */ (function (_super) {
          */
         _this._activeConnection = null;
         /**
+         * The list of chunder URIs that will be passed to PStream
+         */
+        _this._chunderURIs = [];
+        /**
          * An audio input MediaStream to pass to new {@link Connection} instances.
          */
         _this._connectionInputStream = null;
@@ -2137,6 +2140,10 @@ var Device = /** @class */ (function (_super) {
          * new {@link Connection} instances.
          */
         _this._connectionSinkIds = ['default'];
+        /**
+         * The name of the edge the {@link Device} is connected to.
+         */
+        _this._edge = null;
         /**
          * Whether each sound is enabled.
          */
@@ -2182,7 +2189,6 @@ var Device = /** @class */ (function (_super) {
             iceServers: [],
             noRegister: false,
             pStreamFactory: PStream,
-            region: regions_1.defaultRegion,
             rtcConstraints: {},
             soundFactory: Sound,
             sounds: {},
@@ -2228,7 +2234,6 @@ var Device = /** @class */ (function (_super) {
                 ice_restart_enabled: _this.options.enableIceRestart,
                 platform: rtc.getMediaEngine(),
                 sdk_version: C.RELEASE_VERSION,
-                selected_region: _this.options.region,
             };
             function setIfDefined(propertyName, value) {
                 if (value) {
@@ -2242,11 +2247,9 @@ var Device = /** @class */ (function (_super) {
                 setIfDefined('audio_codec', connection.codec);
                 payload.direction = connection.direction;
             }
-            var stream = _this.stream;
-            if (stream) {
-                setIfDefined('gateway', stream.gateway);
-                setIfDefined('region', stream.region);
-            }
+            setIfDefined('gateway', _this.stream && _this.stream.gateway);
+            setIfDefined('selected_region', _this.options.region);
+            setIfDefined('region', _this.stream && _this.stream.region);
             return payload;
         };
         /**
@@ -2269,7 +2272,9 @@ var Device = /** @class */ (function (_super) {
          * Called when a 'connected' event is received from the signaling stream.
          */
         _this._onSignalingConnected = function (payload) {
-            _this._region = regions_1.getRegionShortcode(payload.region) || payload.region;
+            var region = regions_1.getRegionShortcode(payload.region);
+            _this._edge = regions_1.regionToEdge[region] || payload.region;
+            _this._region = region || payload.region;
             _this._sendPresence();
         };
         /**
@@ -2337,6 +2342,7 @@ var Device = /** @class */ (function (_super) {
         _this._onSignalingOffline = function () {
             _this._log.info('Stream is offline');
             _this._status = Device.Status.Offline;
+            _this._edge = null;
             _this._region = null;
             _this.emit('offline', _this);
         };
@@ -2563,6 +2569,17 @@ var Device = /** @class */ (function (_super) {
         this._throwUnlessSetup('disconnectAll');
         this._disconnectAll();
     };
+    Object.defineProperty(Device.prototype, "edge", {
+        /**
+         * Returns the {@link Edge} value the {@link Device} is currently connected
+         * to. The value will be `null` when the {@link Device} is offline.
+         */
+        get: function () {
+            return this._edge;
+        },
+        enumerable: true,
+        configurable: true
+    });
     /**
      * Set a handler for the error event.
      * @deprecated Use {@link Device.on}.
@@ -2600,6 +2617,8 @@ var Device = /** @class */ (function (_super) {
      * if not connected.
      */
     Device.prototype.region = function () {
+        this._log.warn('`Device.region` is deprecated and will be removed in the next major ' +
+            'release. Please use `Device.edge` instead.');
         this._throwUnlessSetup('region');
         return typeof this._region === 'string' ? this._region : 'offline';
     };
@@ -2636,14 +2655,29 @@ var Device = /** @class */ (function (_super) {
             }
             throw new errors_1.NotSupportedError("twilio.js 1.3+ SDKs require WebRTC/ORTC browser support.         For more information, see <https://www.twilio.com/docs/api/client/twilio-js>.         If you have any questions about this announcement, please contact         Twilio Support at <help@twilio.com>.");
         }
+        if (util_1.isLegacyEdge()) {
+            this._log.warn('Microsoft Edge Legacy (https://support.microsoft.com/en-us/help/4533505/what-is-microsoft-edge-legacy) ' +
+                'is deprecated and will not be able to connect to Twilio to make or receive calls after September 1st, 2020. ' +
+                'Please see this documentation for a list of supported browsers ' +
+                'https://www.twilio.com/docs/voice/client/javascript#supported-browsers');
+        }
         if (!token) {
             throw new errors_1.InvalidArgumentError('Token is required for Device.setup()');
         }
+        Object.assign(this.options, options);
+        this._log.setDefaultLevel(this.options.debug
+            ? log_1.default.levels.DEBUG
+            : this.options.warnings
+                ? log_1.default.levels.WARN
+                : log_1.default.levels.SILENT);
+        this._chunderURIs = this.options.chunderw
+            ? ["wss://" + this.options.chunderw + "/signal"]
+            : regions_1.getChunderURIs(this.options.edge, this.options.region, this._log.warn.bind(this._log)).map(function (uri) { return "wss://" + uri + "/signal"; });
         if (typeof Device._isUnifiedPlanDefault === 'undefined') {
             Device._isUnifiedPlanDefault = typeof window !== 'undefined'
                 && typeof RTCPeerConnection !== 'undefined'
                 && typeof RTCRtpTransceiver !== 'undefined'
-                ? isUnifiedPlanDefault(window, window.navigator, RTCPeerConnection, RTCRtpTransceiver)
+                ? util_1.isUnifiedPlanDefault(window, window.navigator, RTCPeerConnection, RTCRtpTransceiver)
                 : false;
         }
         if (!Device._audioContext) {
@@ -2669,13 +2703,9 @@ var Device = /** @class */ (function (_super) {
             return this;
         }
         this.isInitialized = true;
-        Object.assign(this.options, options);
         if (this.options.dscp) {
             this.options.rtcConstraints.optional = [{ googDscp: true }];
         }
-        this._log.setDefaultLevel(this.options.debug ? log_1.default.levels.DEBUG
-            : this.options.warnings ? log_1.default.levels.WARN
-                : log_1.default.levels.SILENT);
         var getOrSetSound = function (key, value) {
             if (!hasBeenWarnedSounds) {
                 _this._log.warn('Device.sounds is deprecated and will be removed in the next breaking ' +
@@ -2691,8 +2721,6 @@ var Device = /** @class */ (function (_super) {
             .forEach(function (eventName) {
             _this.sounds[eventName] = getOrSetSound.bind(null, eventName);
         });
-        var regionURI = regions_1.getRegionURI(this.options.region, function (newRegion) { return _this._log.warn("Region " + _this.options.region + " is deprecated, please use " + newRegion + "."); });
-        this.options.chunderw = "wss://" + (this.options.chunderw || regionURI) + "/signal";
         var defaultSounds = {
             disconnect: { filename: 'disconnect', maxDuration: 3000 },
             dtmf0: { filename: 'dtmf-0', maxDuration: 1000 },
@@ -2726,6 +2754,10 @@ var Device = /** @class */ (function (_super) {
         this._publisher = (this.options.Publisher || Publisher)('twilio-js-sdk', token, {
             defaultPayload: this._createDefaultPayload,
             host: this.options.eventgw,
+            metadata: {
+                app_name: this.options.appName,
+                app_version: this.options.appVersion,
+            },
         });
         if (this.options.publishEvents === false) {
             this._publisher.disable();
@@ -2893,6 +2925,12 @@ var Device = /** @class */ (function (_super) {
             if (connection.direction === connection_1.default.CallDirection.Outgoing && _this._enabledSounds.outgoing) {
                 _this.soundcache.get(Device.SoundName.Outgoing).play();
             }
+            var data = { edge: _this._edge || _this._region };
+            var selectedEdge = _this.options.edge;
+            if (selectedEdge) {
+                data['selected_edge'] = Array.isArray(selectedEdge) ? selectedEdge : [selectedEdge];
+            }
+            _this._publisher.info('settings', 'edge', data, connection);
             _this._asyncEmit('connect', connection);
         });
         connection.addListener('error', function (error) {
@@ -2984,7 +3022,7 @@ var Device = /** @class */ (function (_super) {
      */
     Device.prototype._setupStream = function (token) {
         this._log.info('Setting up VSP');
-        this.stream = this.options.pStreamFactory(token, this.options.chunderw, {
+        this.stream = this.options.pStreamFactory(token, this._chunderURIs, {
             backoffMaxMs: this.options.backoffMaxMs,
         });
         this.stream.addListener('close', this._onSignalingClose);
@@ -3568,6 +3606,8 @@ var request = require('./request');
  *   may store them in case publishing is re-enabled later. Defaults to true.
  */ /**
     * @typedef {Object} EventPublisher.Options
+    * @property {Object} [metadata=undefined] - A publisher_metadata object to send
+    *   with each payload.
     * @property {String} [host='eventgw.twilio.com'] - The host address of the EA
     *   server to publish to.
     * @property {Object|Function} [defaultPayload] - A default payload to extend
@@ -3599,6 +3639,9 @@ function EventPublisher(productName, token, options) {
   }
 
   var isEnabled = true;
+  // eslint-disable-next-line camelcase,no-undefined
+  var metadata = Object.assign({ app_name: undefined, app_version: undefined }, options.metadata);
+
   Object.defineProperties(this, {
     _defaultPayload: { value: defaultPayload },
     _isEnabled: {
@@ -3616,6 +3659,12 @@ function EventPublisher(productName, token, options) {
       enumerable: true,
       get: function get() {
         return isEnabled;
+      }
+    },
+    metadata: {
+      enumerable: true,
+      get: function get() {
+        return metadata;
       }
     },
     productName: { enumerable: true, value: productName },
@@ -3663,6 +3712,11 @@ EventPublisher.prototype._post = function _post(endpointName, level, group, name
     payload: payload && payload.forEach ? payload.slice(0) : Object.assign(this._defaultPayload(connection), payload)
     /* eslint-enable camelcase */
   };
+
+  if (this.metadata) {
+    // eslint-disable-next-line camelcase
+    event.publisher_metadata = this.metadata;
+  }
 
   var requestParams = {
     url: 'https://' + this._host + '/v4/' + endpointName,
@@ -4059,13 +4113,13 @@ var PSTREAM_VERSION = '1.5';
  * @borrows EventEmitter#hasListener as #hasListener
  * @constructor
  * @param {string} token The Twilio capabilities JWT
- * @param {string} uri The PStream endpoint URI
+ * @param {string[]} uris An array of PStream endpoint URIs
  * @param {object} [options]
  * @config {boolean} [options.backoffMaxMs=20000] Enable debugging
  */
-function PStream(token, uri, options) {
+function PStream(token, uris, options) {
   if (!(this instanceof PStream)) {
-    return new PStream(token, uri, options);
+    return new PStream(token, uris, options);
   }
   var defaults = {
     TransportFactory: WSTransport
@@ -4078,10 +4132,10 @@ function PStream(token, uri, options) {
   this.options = options;
   this.token = token || '';
   this.status = 'disconnected';
-  this.uri = uri;
   this.gateway = null;
   this.region = null;
   this._messageQueue = [];
+  this._uris = uris;
 
   this._handleTransportClose = this._handleTransportClose.bind(this);
   this._handleTransportError = this._handleTransportError.bind(this);
@@ -4123,8 +4177,17 @@ function PStream(token, uri, options) {
     self._destroy();
   });
 
-  this.transport = new this.options.TransportFactory(this.uri, {
+  this.transport = new this.options.TransportFactory(this._uris, {
     backoffMaxMs: this.options.backoffMaxMs
+  });
+
+  Object.defineProperties(this, {
+    uri: {
+      enumerable: true,
+      get: function get() {
+        return this.transport.uri;
+      }
+    }
   });
 
   this.transport.on('close', this._handleTransportClose);
@@ -4312,11 +4375,15 @@ function getBrowserInfo() {
 module.exports = PStream;
 },{"./constants":7,"./errors":12,"./log":14,"./wstransport":34,"events":46,"util":58}],17:[function(require,module,exports){
 "use strict";
-var _a, _b;
+var _a, _b, _c, _d;
 Object.defineProperty(exports, "__esModule", { value: true });
 /**
+ * @module Voice
+ * This module describes valid and deprecated regions.
+ */
+var errors_1 = require("./errors");
+/**
  * Valid deprecated regions.
- *
  * @private
  */
 var DeprecatedRegion;
@@ -4330,12 +4397,47 @@ var DeprecatedRegion;
     DeprecatedRegion["UsVa"] = "us-va";
 })(DeprecatedRegion = exports.DeprecatedRegion || (exports.DeprecatedRegion = {}));
 /**
+ * Valid edges.
+ * @private
+ */
+var Edge;
+(function (Edge) {
+    /**
+     * Public edges
+     */
+    Edge["Sydney"] = "sydney";
+    Edge["SaoPaolo"] = "sao-paolo";
+    Edge["Dublin"] = "dublin";
+    Edge["Frankfurt"] = "frankfurt";
+    Edge["Tokyo"] = "tokyo";
+    Edge["Singapore"] = "singapore";
+    Edge["Ashburn"] = "ashburn";
+    Edge["Umatilla"] = "umatilla";
+    Edge["Roaming"] = "roaming";
+    /**
+     * Interconnect edges
+     */
+    Edge["AshburnIx"] = "ashburn-ix";
+    Edge["SanJoseIx"] = "san-jose-ix";
+    Edge["LondonIx"] = "london-ix";
+    Edge["FrankfurtIx"] = "frankfurt-ix";
+    Edge["SingaporeIx"] = "singapore-ix";
+})(Edge = exports.Edge || (exports.Edge = {}));
+/**
  * Valid current regions.
  *
- * @deprecated CLIENT-6831
+ * @deprecated
+ *
+ * CLIENT-6831
  * This is no longer used or updated for checking validity of regions in the
  * SDK. We now allow any string to be passed for region. Invalid regions won't
  * be able to connect, and won't throw an exception.
+ *
+ * CLIENT-7519
+ * This is used again to temporarily convert edge values to regions as part of
+ * Phase 1 Regional. This is still considered deprecated.
+ *
+ * @private
  */
 var Region;
 (function (Region) {
@@ -4349,6 +4451,8 @@ var Region;
     Region["Ie1Tnx"] = "ie1-tnx";
     Region["Jp1"] = "jp1";
     Region["Sg1"] = "sg1";
+    Region["Sg1Ix"] = "sg1-ix";
+    Region["Sg1Tnx"] = "sg1-tnx";
     Region["Us1"] = "us1";
     Region["Us1Ix"] = "us1-ix";
     Region["Us1Tnx"] = "us1-tnx";
@@ -4358,6 +4462,7 @@ var Region;
 })(Region = exports.Region || (exports.Region = {}));
 /**
  * Deprecated regions. Maps the deprecated region to its equivalent up-to-date region.
+ * @private
  */
 exports.deprecatedRegions = (_a = {},
     _a[DeprecatedRegion.Au] = Region.Au1,
@@ -4397,6 +4502,8 @@ var regionURIs = (_b = {},
     _b[Region.Ie1Tnx] = 'chunderw-vpc-gll-ie1-tnx.twilio.com',
     _b[Region.Jp1] = 'chunderw-vpc-gll-jp1.twilio.com',
     _b[Region.Sg1] = 'chunderw-vpc-gll-sg1.twilio.com',
+    _b[Region.Sg1Ix] = 'chunderw-vpc-gll-sg1-ix.twilio.com',
+    _b[Region.Sg1Tnx] = 'chunderw-vpc-gll-sg1-tnx.twilio.com',
     _b[Region.Us1] = 'chunderw-vpc-gll-us1.twilio.com',
     _b[Region.Us1Ix] = 'chunderw-vpc-gll-us1-ix.twilio.com',
     _b[Region.Us1Tnx] = 'chunderw-vpc-gll-us1-tnx.twilio.com',
@@ -4405,34 +4512,153 @@ var regionURIs = (_b = {},
     _b[Region.Us2Tnx] = 'chunderw-vpc-gll-us2-tnx.twilio.com',
     _b);
 /**
+ * Edge to region mapping, as part of Phase 1 Regional (CLIENT-7519).
+ * Temporary.
+ * @private
+ */
+exports.edgeToRegion = (_c = {},
+    _c[Edge.Sydney] = Region.Au1,
+    _c[Edge.SaoPaolo] = Region.Br1,
+    _c[Edge.Dublin] = Region.Ie1,
+    _c[Edge.Frankfurt] = Region.De1,
+    _c[Edge.Tokyo] = Region.Jp1,
+    _c[Edge.Singapore] = Region.Sg1,
+    _c[Edge.Ashburn] = Region.Us1,
+    _c[Edge.Umatilla] = Region.Us2,
+    _c[Edge.Roaming] = Region.Gll,
+    /**
+     * Interconnect edges
+     */
+    _c[Edge.AshburnIx] = Region.Us1Ix,
+    _c[Edge.SanJoseIx] = Region.Us2Ix,
+    _c[Edge.LondonIx] = Region.Ie1Ix,
+    _c[Edge.FrankfurtIx] = Region.De1Ix,
+    _c[Edge.SingaporeIx] = Region.Sg1Ix,
+    _c);
+/**
+ * Region to edge mapping, as part of Phase 1 Regional (CLIENT-7519).
+ * Temporary.
+ * @private
+ */
+exports.regionToEdge = (_d = {},
+    _d[Region.Au1] = Edge.Sydney,
+    _d[Region.Br1] = Edge.SaoPaolo,
+    _d[Region.Ie1] = Edge.Dublin,
+    _d[Region.De1] = Edge.Frankfurt,
+    _d[Region.Jp1] = Edge.Tokyo,
+    _d[Region.Sg1] = Edge.Singapore,
+    _d[Region.Us1] = Edge.Ashburn,
+    _d[Region.Us2] = Edge.Umatilla,
+    _d[Region.Gll] = Edge.Roaming,
+    /**
+     * Interconnect edges
+     */
+    _d[Region.Us1Ix] = Edge.AshburnIx,
+    _d[Region.Us2Ix] = Edge.SanJoseIx,
+    _d[Region.Ie1Ix] = Edge.LondonIx,
+    _d[Region.De1Ix] = Edge.FrankfurtIx,
+    _d[Region.Sg1Ix] = Edge.SingaporeIx,
+    /**
+     * Tnx regions
+     */
+    _d[Region.Us1Tnx] = Edge.AshburnIx,
+    _d[Region.Us2Tnx] = Edge.AshburnIx,
+    _d[Region.Ie1Tnx] = Edge.LondonIx,
+    _d[Region.Sg1Tnx] = Edge.SingaporeIx,
+    _d);
+/**
  * The default region to connect to and create a chunder uri from if region is
  * not defined.
  * @constant
+ * @private
  */
 exports.defaultRegion = 'gll';
 /**
- * Get the URI associated with the passed shortcode.
+ * The default edge to connect to and create a chunder uri from, if the edge
+ * parameter is not specified during setup in `Device`.
+ * @constant
+ */
+exports.defaultEdge = Edge.Roaming;
+/**
+ * The default chunder URI to connect to, should map to region `gll`.
+ * @constant
+ * @private
+ */
+exports.defaultChunderRegionURI = 'chunderw-vpc-gll.twilio.com';
+/**
+ * String template for a region chunder URI
+ * @param region - The region.
+ */
+function createChunderRegionUri(region) {
+    return region === exports.defaultRegion
+        ? exports.defaultChunderRegionURI
+        : "chunderw-vpc-gll-" + region + ".twilio.com";
+}
+/**
+ * String template for an edge chunder URI
+ * @param edge - The edge.
+ */
+function createChunderEdgeUri(edge) {
+    return "voice-js." + edge + ".twilio.com";
+}
+/**
+ * Get the URI associated with the passed region or edge. If both are passed,
+ * then we want to fail `Device` setup, so we throw an error.
+ * As of CLIENT-7519, Regions are deprecated in favor of edges as part of
+ * Phase 1 Regional.
  *
  * @private
- * @param region - The region shortcode. Defaults to gll.
- * @param [onDeprecated] - A callback containing the new region to be called when the passed region
- *   is deprecated.
+ * @param edge - A string or an array of edge values
+ * @param region - The region shortcode.
+ * @param [onDeprecated] - A callback containing the deprecation message to be
+ *   warned when the passed parameters are deprecated.
+ * @returns An array of chunder URIs
  */
-function getRegionURI(region, onDeprecated) {
-    if (region === undefined || region === exports.defaultRegion) {
-        return "chunderw-vpc-gll.twilio.com";
+function getChunderURIs(edge, region, onDeprecated) {
+    if (!!region && typeof region !== 'string') {
+        throw new errors_1.InvalidArgumentError('If `region` is provided, it must be of type `string`.');
     }
-    var newRegion = exports.deprecatedRegions[region];
-    if (newRegion) {
-        region = newRegion;
-        if (onDeprecated) {
-            // Don't let this callback affect script execution.
-            setTimeout(function () { return onDeprecated(newRegion); });
+    if (!!edge && typeof edge !== 'string' && !Array.isArray(edge)) {
+        throw new errors_1.InvalidArgumentError('If `edge` is provided, it must be of type `string` or an array of strings.');
+    }
+    var deprecatedMessages = [];
+    var uris;
+    if (region && edge) {
+        throw new errors_1.InvalidArgumentError('You cannot specify `region` when `edge` is specified in' +
+            '`Twilio.Device.Options`.');
+    }
+    else if (region) {
+        var chunderRegion = region;
+        deprecatedMessages.push('Regions are deprecated in favor of edges. Please see this page for ' +
+            'documentation: https://www.twilio.com/docs/voice/client/edges.');
+        var isDeprecatedRegion = Object.values(DeprecatedRegion).includes(chunderRegion);
+        if (isDeprecatedRegion) {
+            chunderRegion = exports.deprecatedRegions[chunderRegion];
         }
+        var isKnownRegion = Object.values(Region).includes(chunderRegion);
+        if (isKnownRegion) {
+            var preferredEdge = exports.regionToEdge[chunderRegion];
+            deprecatedMessages.push("Region \"" + chunderRegion + "\" is deprecated, please use `edge` " +
+                ("\"" + preferredEdge + "\"."));
+        }
+        uris = [createChunderRegionUri(chunderRegion)];
     }
-    return "chunderw-vpc-gll-" + region + ".twilio.com";
+    else if (edge) {
+        var edgeValues_1 = Object.values(Edge);
+        var edgeParams = Array.isArray(edge) ? edge : [edge];
+        uris = edgeParams.map(function (param) { return edgeValues_1.includes(param)
+            ? createChunderRegionUri(exports.edgeToRegion[param])
+            : createChunderEdgeUri(param); });
+    }
+    else {
+        uris = [exports.defaultChunderRegionURI];
+    }
+    if (onDeprecated && deprecatedMessages.length) {
+        setTimeout(function () { return onDeprecated(deprecatedMessages.join('\n')); });
+    }
+    return uris;
 }
-exports.getRegionURI = getRegionURI;
+exports.getChunderURIs = getChunderURIs;
 /**
  * Get the region shortcode by its full AWS region string.
  *
@@ -4444,7 +4670,7 @@ function getRegionShortcode(region) {
 }
 exports.getRegionShortcode = getRegionShortcode;
 
-},{}],18:[function(require,module,exports){
+},{"./errors":12}],18:[function(require,module,exports){
 'use strict';
 
 var XHR = require('xmlhttprequest').XMLHttpRequest;
@@ -6255,7 +6481,7 @@ function RTCPC() {
     return;
   }
 
-  if (util.isEdge()) {
+  if (util.isLegacyEdge()) {
     this.RTCPeerConnection = new RTCPeerConnectionShim(typeof window !== 'undefined' ? window : global);
   } else if (typeof window.RTCPeerConnection === 'function') {
     this.RTCPeerConnection = window.RTCPeerConnection;
@@ -6289,7 +6515,7 @@ RTCPC.prototype.createModernConstraints = function (c) {
   // 'mandatory' key and does not expect the first letter of each constraint
   // capitalized.
   var nc = Object.assign({}, c);
-  if (typeof webkitRTCPeerConnection !== 'undefined' && !util.isEdge()) {
+  if (typeof webkitRTCPeerConnection !== 'undefined' && !util.isLegacyEdge()) {
     nc.mandatory = {};
     if (typeof c.audio !== 'undefined') {
       nc.mandatory.OfferToReceiveAudio = c.audio;
@@ -7687,7 +7913,7 @@ function isFirefox(navigator) {
     return !!(navigator) && typeof navigator.userAgent === 'string'
         && /firefox|fxios/i.test(navigator.userAgent);
 }
-function isEdge(navigator) {
+function isLegacyEdge(navigator) {
     navigator = navigator || (typeof window === 'undefined'
         ? global.navigator : window.navigator);
     return !!(navigator) && typeof navigator.userAgent === 'string'
@@ -7767,7 +7993,7 @@ exports.difference = difference;
 exports.isElectron = isElectron;
 exports.isChrome = isChrome;
 exports.isFirefox = isFirefox;
-exports.isEdge = isEdge;
+exports.isLegacyEdge = isLegacyEdge;
 exports.isSafari = isSafari;
 exports.isUnifiedPlanDefault = isUnifiedPlanDefault;
 exports.queryToJson = queryToJson;
@@ -7828,10 +8054,10 @@ var WSTransport = /** @class */ (function (_super) {
     __extends(WSTransport, _super);
     /**
      * @constructor
-     * @param uri - The URI of the endpoint to connect to.
+     * @param uris - List of URI of the endpoints to connect to.
      * @param [options] - Constructor options.
      */
-    function WSTransport(uri, options) {
+    function WSTransport(uris, options) {
         if (options === void 0) { options = {}; }
         var _this = _super.call(this) || this;
         /**
@@ -7843,20 +8069,56 @@ var WSTransport = /** @class */ (function (_super) {
          */
         _this._log = log_1.default.getInstance();
         /**
+         * Whether we should attempt to fallback if we receive an applicable error
+         * when trying to connect to a signaling endpoint.
+         */
+        _this._shouldFallback = false;
+        /**
+         * The current uri index that the transport is connected to.
+         */
+        _this._uriIndex = 0;
+        /**
+         * Move the uri index to the next index
+         * If the index is at the end, the index goes back to the first one.
+         */
+        _this._moveUriIndex = function () {
+            _this._uriIndex++;
+            if (_this._uriIndex >= _this._uris.length) {
+                _this._uriIndex = 0;
+            }
+        };
+        /**
          * Called in response to WebSocket#close event.
          */
         _this._onSocketClose = function (event) {
-            _this._log.info("Received websocket close event code: " + event.code);
-            if (event.code === 1006) {
+            _this._log.info("Received websocket close event code: " + event.code + ". Reason: " + event.reason);
+            // 1006: Abnormal close. When the server is unreacheable
+            // 1015: TLS Handshake error
+            if (event.code === 1006 || event.code === 1015) {
                 _this.emit('error', {
                     code: 31005,
                     message: event.reason ||
                         'Websocket connection to Twilio\'s signaling servers were ' +
                             'unexpectedly ended. If this is happening consistently, there may ' +
-                            'be an issue resolving the hostname provided. If a region is being ' +
-                            'specified in Device setup, ensure it\'s a valid region.',
+                            'be an issue resolving the hostname provided. If a region or an ' +
+                            'edge is being specified in Device setup, ensure it is valid.',
                     twilioError: new errors_1.SignalingErrors.ConnectionError(),
                 });
+                var wasConnected = (
+                // Only in Safari and certain Firefox versions, on network interruption, websocket drops right away with 1006
+                // Let's check current state if it's open, meaning we should not fallback
+                // because we're coming from a previously connected session
+                _this.state === WSTransportState.Open ||
+                    // But on other browsers, websocket doesn't drop
+                    // but our heartbeat catches it, setting the internal state to "Connecting".
+                    // With this, we should check the previous state instead.
+                    _this._previousState === WSTransportState.Open);
+                // Only fallback if this is not the first error
+                // and if we were not connected previously
+                if (_this._shouldFallback || !wasConnected) {
+                    _this._moveUriIndex();
+                }
+                _this._shouldFallback = true;
             }
             _this._closeSocket();
         };
@@ -7891,20 +8153,30 @@ var WSTransport = /** @class */ (function (_super) {
         _this._onSocketOpen = function () {
             _this._log.info('WebSocket opened successfully.');
             _this._timeOpened = Date.now();
-            _this.state = WSTransportState.Open;
+            _this._shouldFallback = false;
+            _this._setState(WSTransportState.Open);
             clearTimeout(_this._connectTimeout);
             _this._setHeartbeatTimeout();
             _this.emit('open');
         };
-        _this._backoff = Backoff.exponential({
+        _this._connectTimeoutMs = options.connectTimeoutMs || CONNECT_TIMEOUT;
+        var initialDelay = 100;
+        if (uris && uris.length > 1) {
+            // We only want a random initial delay if there are any fallback edges
+            // Initial delay between 1s and 5s both inclusive
+            initialDelay = Math.floor(Math.random() * (5000 - 1000 + 1)) + 1000;
+        }
+        var backoffConfig = {
             factor: 2.0,
-            initialDelay: 100,
+            initialDelay: initialDelay,
             maxDelay: typeof options.backoffMaxMs === 'number'
                 ? Math.max(options.backoffMaxMs, 3000)
                 : 20000,
             randomisationFactor: 0.40,
-        });
-        _this._uri = uri;
+        };
+        _this._log.info('Initializing transport backoff using config: ', backoffConfig);
+        _this._backoff = Backoff.exponential(backoffConfig);
+        _this._uris = uris;
         _this._WebSocket = options.WebSocket || WebSocket;
         // Called when a backoff timer is started.
         _this._backoff.on('backoff', function (_, delay) {
@@ -7968,7 +8240,7 @@ var WSTransport = /** @class */ (function (_super) {
      * Close the WebSocket, and don't try to reconnect.
      */
     WSTransport.prototype._close = function () {
-        this.state = WSTransportState.Closed;
+        this._setState(WSTransportState.Closed);
         this._closeSocket();
     };
     /**
@@ -8012,17 +8284,17 @@ var WSTransport = /** @class */ (function (_super) {
             this._log.info('Attempting to connect...');
         }
         this._closeSocket();
-        this.state = WSTransportState.Connecting;
+        this._setState(WSTransportState.Connecting);
         var socket = null;
         try {
-            socket = new this._WebSocket(this._uri);
+            socket = new this._WebSocket(this._uris[this._uriIndex]);
         }
         catch (e) {
             this._log.info('Could not connect to endpoint:', e.message);
             this._close();
             this.emit('error', {
                 code: 31000,
-                message: e.message || "Could not connect to " + this._uri,
+                message: e.message || "Could not connect to " + this._uris[this._uriIndex],
                 twilioError: new errors_1.SignalingErrors.ConnectionDisconnected(),
             });
             return;
@@ -8030,8 +8302,9 @@ var WSTransport = /** @class */ (function (_super) {
         delete this._timeOpened;
         this._connectTimeout = setTimeout(function () {
             _this._log.info('WebSocket connection attempt timed out.');
+            _this._moveUriIndex();
             _this._closeSocket();
-        }, CONNECT_TIMEOUT);
+        }, this._connectTimeoutMs);
         socket.addEventListener('close', this._onSocketClose);
         socket.addEventListener('error', this._onSocketError);
         socket.addEventListener('message', this._onSocketMessage);
@@ -8047,9 +8320,27 @@ var WSTransport = /** @class */ (function (_super) {
         clearTimeout(this._heartbeatTimeout);
         this._heartbeatTimeout = setTimeout(function () {
             _this._log.info("No messages received in " + HEARTBEAT_TIMEOUT / 1000 + " seconds. Reconnecting...");
+            _this._shouldFallback = true;
             _this._closeSocket();
         }, HEARTBEAT_TIMEOUT);
     };
+    /**
+     * Set the current and previous state
+     */
+    WSTransport.prototype._setState = function (state) {
+        this._previousState = this.state;
+        this.state = state;
+    };
+    Object.defineProperty(WSTransport.prototype, "uri", {
+        /**
+         * The uri the transport is currently connected to
+         */
+        get: function () {
+            return this._uris[this._uriIndex];
+        },
+        enumerable: true,
+        configurable: true
+    });
     return WSTransport;
 }(events_1.EventEmitter));
 exports.default = WSTransport;
