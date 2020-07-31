@@ -1,16 +1,16 @@
-/*! twilio-client.js 1.11.0
+/*! twilio-client.js 1.12.1
 
 The following license applies to all parts of this software except as
 documented below.
 
     Copyright (C) 2015-2020 Twilio, inc.
- 
+
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
     You may obtain a copy of the License at
- 
+
         http://www.apache.org/licenses/LICENSE-2.0
- 
+
     Unless required by applicable law or agreed to in writing, software
     distributed under the License is distributed on an "AS IS" BASIS,
     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -907,6 +907,10 @@ var Connection = /** @class */ (function (_super) {
          */
         _this._isAnswered = false;
         /**
+         * Whether the call has been cancelled.
+         */
+        _this._isCancelled = false;
+        /**
          * The most recent public input volume value. 0 -> 1 representing -100 to -30 dB.
          */
         _this._latestInputVolume = 0;
@@ -1009,14 +1013,13 @@ var Connection = /** @class */ (function (_super) {
             // (rrowland) Is this check necessary? Verify, and if so move to pstream / VSP module.
             var callsid = payload.callsid;
             if (_this.parameters.CallSid === callsid) {
-                _this.once('disconnect', function () {
-                    _this._status = Connection.State.Closed;
-                    _this.emit('cancel');
-                    _this.pstream.removeListener('cancel', _this._onCancel);
-                });
+                _this._isCancelled = true;
                 _this._publisher.info('connection', 'cancel', null, _this);
                 _this._cleanupEventListeners();
                 _this.mediaStream.close();
+                _this._status = Connection.State.Closed;
+                _this.emit('cancel');
+                _this.pstream.removeListener('cancel', _this._onCancel);
             }
         };
         /**
@@ -1194,6 +1197,14 @@ var Connection = /** @class */ (function (_super) {
             _this.parameters = _this.options.callParameters;
         }
         _this._direction = _this.parameters.CallSid ? Connection.CallDirection.Incoming : Connection.CallDirection.Outgoing;
+        if (_this._direction === Connection.CallDirection.Incoming && _this.parameters) {
+            _this.callerInfo = _this.parameters.StirStatus
+                ? { isVerified: _this.parameters.StirStatus === 'TN-Validation-Passed-A' }
+                : null;
+        }
+        else {
+            _this.callerInfo = null;
+        }
         _this._mediaReconnectBackoff = Backoff.exponential(BACKOFF_CONFIG);
         _this._mediaReconnectBackoff.on('ready', function () { return _this.mediaStream.iceRestart(); });
         var publisher = _this._publisher = config.publisher;
@@ -1333,7 +1344,9 @@ var Connection = /** @class */ (function (_super) {
             }
             monitor.disable();
             _this._publishMetrics();
-            _this.emit('disconnect', _this);
+            if (!_this._isCancelled) {
+                _this.emit('disconnect', _this);
+            }
         };
         // temporary call sid to be used for outgoing calls
         _this.outboundConnectionId = generateTempCallSid();
@@ -1960,7 +1973,7 @@ exports.default = Connection;
  * This file is generated on build. To make changes, see /templates/constants.js
  */
 var PACKAGE_NAME = 'twilio-client';
-var RELEASE_VERSION = '1.11.0';
+var RELEASE_VERSION = '1.12.1';
 module.exports.SOUNDS_BASE_URL = 'https://sdk.twilio.com/js/client/sounds/releases/1.0.0';
 module.exports.PACKAGE_NAME = PACKAGE_NAME;
 module.exports.RELEASE_VERSION = RELEASE_VERSION;
@@ -4406,7 +4419,7 @@ var Edge;
      * Public edges
      */
     Edge["Sydney"] = "sydney";
-    Edge["SaoPaolo"] = "sao-paolo";
+    Edge["SaoPaulo"] = "sao-paulo";
     Edge["Dublin"] = "dublin";
     Edge["Frankfurt"] = "frankfurt";
     Edge["Tokyo"] = "tokyo";
@@ -4518,7 +4531,7 @@ var regionURIs = (_b = {},
  */
 exports.edgeToRegion = (_c = {},
     _c[Edge.Sydney] = Region.Au1,
-    _c[Edge.SaoPaolo] = Region.Br1,
+    _c[Edge.SaoPaulo] = Region.Br1,
     _c[Edge.Dublin] = Region.Ie1,
     _c[Edge.Frankfurt] = Region.De1,
     _c[Edge.Tokyo] = Region.Jp1,
@@ -4542,7 +4555,7 @@ exports.edgeToRegion = (_c = {},
  */
 exports.regionToEdge = (_d = {},
     _d[Region.Au1] = Edge.Sydney,
-    _d[Region.Br1] = Edge.SaoPaolo,
+    _d[Region.Br1] = Edge.SaoPaulo,
     _d[Region.Ie1] = Edge.Dublin,
     _d[Region.De1] = Edge.Frankfurt,
     _d[Region.Jp1] = Edge.Tokyo,
